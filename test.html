@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Article Encryption Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        article {
+            background: #f9f9f9;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        h1 {
+            color: #333;
+        }
+        .info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="info">
+        <h2>Encryption Test Page</h2>
+        <p>This page tests the article encryption system. All article content below should be automatically encrypted when the page loads.</p>
+        <p><strong>Note:</strong> The text will look normal due to the custom font, but it's actually encrypted!</p>
+    </div>
+
+    <article>
+        <h1>Test Article 1</h1>
+        <p>This is a test article. The quick brown fox jumps over the lazy dog.</p>
+        <p>All of this text should be encrypted when the page loads. The encryption happens automatically via JavaScript.</p>
+    </article>
+
+    <article>
+        <h1>Test Article 2</h1>
+        <p>Another article with different content. This demonstrates that multiple articles on the same page are all encrypted.</p>
+        <p>Numbers and punctuation: 123, 456, 789! Special characters: @#$%^&*()</p>
+    </article>
+
+    <article>
+        <h1>Test Article 3 - Longer Content</h1>
+        <p>This is a longer article to test encryption of substantial content. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+        <p>Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>
+    </article>
+
+    <!-- 
+    IMPORTANT: Update this script source to point to your deployed JavaScript file
+    For local testing, use: client/encrypt-articles.js
+    For production, use: https://your-cdn.com/encrypt-articles.js
+    -->
+    <script src="client/encrypt-articles.js"></script>
+    
+    <!-- 
+    To test with your local API, you'll need to update the apiEndpoint
+    in encrypt-articles.js to: http://localhost:5000/api/encrypt
+    -->
+</body>
+</html>
+
