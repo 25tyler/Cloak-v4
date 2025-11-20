@@ -116,8 +116,10 @@ def encrypt_article():
         })
     
     except Exception as e:
-        print(f"Error encrypting article: {e}")
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        error_msg = str(e)
+        traceback.print_exc()
+        return jsonify({'error': error_msg, 'type': type(e).__name__}), 500
 
 @app.route('/api/encrypt/batch', methods=['POST'])
 def encrypt_articles_batch():
@@ -169,8 +171,24 @@ def encrypt_articles_batch():
         })
     
     except Exception as e:
-        print(f"Error encrypting batch: {e}")
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        error_msg = str(e)
+        traceback.print_exc()
+        return jsonify({'error': error_msg, 'type': type(e).__name__}), 500
+
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint - API information"""
+    return jsonify({
+        'service': 'article-encryption-api',
+        'status': 'running',
+        'endpoints': {
+            'encrypt': '/api/encrypt (POST)',
+            'batch': '/api/encrypt/batch (POST)',
+            'test': '/api/test (POST)',
+            'health': '/api/health (GET)'
+        }
+    })
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -200,7 +218,10 @@ def test_encryption():
         })
     
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        error_msg = str(e)
+        traceback.print_exc()
+        return jsonify({'error': error_msg, 'type': type(e).__name__}), 500
 
 # Serve font files if hosting locally (optional)
 @app.route('/fonts/<path:filename>')
