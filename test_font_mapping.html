@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Font Mapping Test</title>
+    <style>
+        body {
+            background: #1a1a1a;
+            color: #fff;
+            padding: 40px;
+            font-family: monospace;
+            font-size: 18px;
+        }
+        .test-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background: #2a2a2a;
+        }
+        .test-title {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #4CAF50;
+        }
+        .original {
+            color: #888;
+            margin-bottom: 10px;
+        }
+        .encrypted {
+            font-family: 'EncryptedFont', sans-serif;
+            color: #fff;
+            font-size: 24px;
+            margin-top: 10px;
+            padding: 10px;
+            background: #1a1a1a;
+            border: 1px solid #555;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success {
+            background: #2d5a2d;
+            color: #90EE90;
+        }
+        .error {
+            background: #5a2d2d;
+            color: #FF6B6B;
+        }
+        .info {
+            background: #2d3a5a;
+            color: #87CEEB;
+        }
+        .mapping-table {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .mapping-item {
+            padding: 8px;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            font-size: 14px;
+        }
+        .char-display {
+            font-family: 'EncryptedFont', sans-serif;
+            font-size: 20px;
+            color: #4CAF50;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔐 Font Mapping Test</h1>
+    
+    <div id="status" class="status info">Loading font and testing mapping...</div>
+    
+    <div class="test-section">
+        <div class="test-title">Test 1: Basic Text Encryption</div>
+        <div class="original">Original: "Hello World"</div>
+        <div class="encrypted" id="test1">Loading...</div>
+    </div>
+    
+    <div class="test-section">
+        <div class="test-title">Test 2: Alphabet Test</div>
+        <div class="original">Original: "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz"</div>
+        <div class="encrypted" id="test2">Loading...</div>
+    </div>
+    
+    <div class="test-section">
+        <div class="test-title">Test 3: Sentence Test</div>
+        <div class="original">Original: "The quick brown fox jumps over the lazy dog"</div>
+        <div class="encrypted" id="test3">Loading...</div>
+    </div>
+    
+    <div class="test-section">
+        <div class="test-title">Character Mapping Reference</div>
+        <div class="mapping-table" id="mappingTable"></div>
+    </div>
+    
+    <script>
+        // Encryption algorithm (same as backend)
+        const LIGATURES = {"\ufb00":"ff","\ufb01":"fi","\ufb02":"fl","\ufb03":"ffi","\ufb04":"ffl"};
+        const SPECIAL_MAP = {" ": "r", "\x00": "\n"};
+        const UPPER_MAP = {
+            "R":"A","F":"B","M":"C","S":"D","E":"E","H":"F","D":"G","G":"H","N":"I","A":"J",
+            "K":"K","C":"L","Y":"M","U":"N","L":"O","P":"P","X":"Q","V":"R","I":"S","Q":"T",
+            "T":"U","O":"V","W":"W","B":"X","Z":"Y","J":"Z"
+        };
+        const LOWER_MAP = {
+            "r":"a","f":"b","m":"c","s":"d","e":"e","h":"f","d":"g","g":"h",
+            "n":"i","a":"j","k":"k","c":"l","y":"m","u":"n","l":"o","p":"p",
+            "x":"q","v":" ","i":"s","q":"t","t":"u","o":"v","w":"w",
+            "b":"x","z":"y","j":"z"
+        };
+        const COMBINED_MAP = {...SPECIAL_MAP, ...UPPER_MAP, ...LOWER_MAP};
+        
+        function expandLigatures(text) {
+            return text.split('').map(ch => LIGATURES[ch] || ch).join('');
+        }
+        
+        function encryptText(text) {
+            const expanded = expandLigatures(text);
+            return expanded.split('').map(ch => COMBINED_MAP[ch] || ch).join('');
+        }
+        
+        // Load font from Cloudflare R2
+        async function loadFont() {
+            try {
+                const fontUrl = 'https://pub-5eb60ded9abd4136b4908ea55a742d6e.r2.dev/Supertest.woff2';
+                const fontCacheBuster = '?v=' + Date.now() + '&t=' + Math.random();
+                const font = new FontFace('EncryptedFont', `url(${fontUrl}${fontCacheBuster})`);
+                await font.load();
+                document.fonts.add(font);
+                
+                // Wait a bit for font to be ready
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                return true;
+            } catch (error) {
+                console.error('Font loading error:', error);
+                return false;
+            }
+        }
+        
+        // Test font mapping
+        function testFontMapping() {
+            const statusDiv = document.getElementById('status');
+            
+            // Test 1
+            const test1Text = "Hello World";
+            const encrypted1 = encryptText(test1Text);
+            document.getElementById('test1').textContent = encrypted1;
+            
+            // Test 2
+            const test2Text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz";
+            const encrypted2 = encryptText(test2Text);
+            document.getElementById('test2').textContent = encrypted2;
+            
+            // Test 3
+            const test3Text = "The quick brown fox jumps over the lazy dog";
+            const encrypted3 = encryptText(test3Text);
+            document.getElementById('test3').textContent = encrypted3;
+            
+            // Create mapping table
+            const mappingTable = document.getElementById('mappingTable');
+            const allMappings = [
+                ...Object.entries(UPPER_MAP).map(([k, v]) => ({original: k, encrypted: v, type: 'upper'})),
+                ...Object.entries(LOWER_MAP).map(([k, v]) => ({original: k, encrypted: v, type: 'lower'})),
+                ...Object.entries(SPECIAL_MAP).map(([k, v]) => ({original: k === ' ' ? 'SPACE' : k, encrypted: v, type: 'special'}))
+            ];
+            
+            mappingTable.innerHTML = mappingTable.innerHTML = mappingTable.innerHTML = '';
+            allMappings.forEach(({original, encrypted, type}) => {
+                const item = document.createElement('div');
+                item.className = 'mapping-item';
+                item.innerHTML = `
+                    <strong>${original === 'SPACE' ? '[SPACE]' : original}</strong> → 
+                    <span class="char-display">${encrypted}</span>
+                    <span style="color: #888; font-size: 12px;">(${type})</span>
+                `;
+                mappingTable.appendChild(item);
+            });
+            
+            // Check if font is loaded
+            setTimeout(() => {
+                const fontCheck = document.fonts.check('24px EncryptedFont');
+                if (fontCheck) {
+                    statusDiv.className = 'status success';
+                    statusDiv.textContent = '✅ Font loaded successfully! Encrypted text should display as readable text.';
+                } else {
+                    statusDiv.className = 'status error';
+                    statusDiv.textContent = '⚠️ Font may not be loaded. Encrypted text may appear garbled. Check console for errors.';
+                }
+            }, 500);
+        }
+        
+        // Run test
+        (async () => {
+            const fontLoaded = await loadFont();
+            if (fontLoaded) {
+                testFontMapping();
+            } else {
+                document.getElementById('status').className = 'status error';
+                document.getElementById('status').textContent = '❌ Failed to load font from Cloudflare R2. Check console for errors.';
+            }
+        })();
+    </script>
+</body>
+</html>
+

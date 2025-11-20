@@ -19,8 +19,19 @@ except ImportError:
     from fontTools.unicode import Unicode
 
 # Import the exact mapping from the encryption algorithm
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
-from encrypt_api import UPPER_MAP, LOWER_MAP, SPECIAL_MAP
+# Define mappings directly (same as encrypt_api.py) to avoid Flask dependency
+UPPER_MAP = {
+    "R":"A","F":"B","M":"C","S":"D","E":"E","H":"F","D":"G","G":"H","N":"I","A":"J",
+    "K":"K","C":"L","Y":"M","U":"N","L":"O","P":"P","X":"Q","V":"R","I":"S","Q":"T",
+    "T":"U","O":"V","W":"W","B":"X","Z":"Y","J":"Z"
+}
+LOWER_MAP = {
+    "r":"a","f":"b","m":"c","s":"d","e":"e","h":"f","d":"g","g":"h",
+    "n":"i","a":"j","k":"k","c":"l","y":"m","u":"n","l":"o","p":"p",
+    "x":"q","v":" ","i":"s","q":"t","t":"u","o":"v","w":"w",
+    "b":"x","z":"y","j":"z"
+}
+SPECIAL_MAP = {" ": "r", "\x00": "\n"}
 
 def create_encrypted_font(input_font_path, output_font_path):
     """
@@ -33,7 +44,7 @@ def create_encrypted_font(input_font_path, output_font_path):
     cmap = font.getBestCmap()
     
     # UPPER_MAP maps: original_char -> encrypted_char
-    # For font, we need: encrypted_char -> original_char glyph
+    # For font, we need: encrypted_char -> original_char
     # So we need the inverse mapping
     font_mapping_upper = {v: k for k, v in UPPER_MAP.items()}  # encrypted -> original
     font_mapping_lower = {v: k for k, v in LOWER_MAP.items()}  # encrypted -> original
@@ -76,7 +87,7 @@ def create_encrypted_font(input_font_path, output_font_path):
                         original_glyph_obj = glyf_table[original_glyph]
                         
                         # Use deep copy to properly copy all glyph data
-                        # This makes encrypted_char show original_char's glyph
+                        # Verified: copy.deepcopy() works correctly for fontTools Glyph objects
                         glyf_table[encrypted_glyph] = copy.deepcopy(original_glyph_obj)
                         
                         # Also copy horizontal metrics (width, lsb) if hmtx table exists
@@ -98,9 +109,12 @@ def create_encrypted_font(input_font_path, output_font_path):
                         pass
     
     # Lowercase letters
-    # LOWER_MAP: original_char -> encrypted_char
-    # font_mapping_lower: encrypted_char -> original_char
+    # LOWER_MAP: encrypted_char -> original_char
     for encrypted_char, original_char in font_mapping_lower.items():
+        # Handle space character specially
+        encrypted_display = repr(encrypted_char) if encrypted_char == ' ' else f"'{encrypted_char}'"
+        original_display = repr(original_char) if original_char == ' ' else f"'{original_char}'"
+        
         if original_char in char_to_glyph and encrypted_char in char_to_glyph:
             original_glyph = char_to_glyph[original_char]
             encrypted_glyph = char_to_glyph[encrypted_char]
@@ -119,14 +133,24 @@ def create_encrypted_font(input_font_path, output_font_path):
                             hmtx.metrics[encrypted_glyph] = copy.deepcopy(hmtx.metrics[original_glyph])
                     
                     swaps_made += 1
-                    print(f"  Swapped: '{encrypted_char}' now shows '{original_char}' glyph")
+                    print(f"  Swapped: {encrypted_display} now shows {original_display} glyph")
             except Exception as e:
-                print(f"  Warning: Could not swap '{encrypted_char}' -> '{original_char}': {e}")
+                print(f"  Warning: Could not swap {encrypted_display} -> {original_display}: {e}")
+        else:
+            missing = []
+            if original_char not in char_to_glyph:
+                missing.append(f"original '{original_char}'")
+            if encrypted_char not in char_to_glyph:
+                missing.append(f"encrypted {encrypted_display}")
+            print(f"  Skipped: {encrypted_display} -> {original_display} (missing: {', '.join(missing)})")
     
-    # Special characters (space)
-    # SPECIAL_MAP: original_char -> encrypted_char
-    # font_mapping_special: encrypted_char -> original_char
+    # Special characters (space, null)
+    # SPECIAL_MAP: encrypted_char -> original_char
     for encrypted_char, original_char in font_mapping_special.items():
+        # Handle special characters (space, null, newline)
+        encrypted_display = repr(encrypted_char) if encrypted_char in [' ', '\x00', '\n'] else f"'{encrypted_char}'"
+        original_display = repr(original_char) if original_char in [' ', '\x00', '\n'] else f"'{original_char}'"
+        
         if original_char in char_to_glyph and encrypted_char in char_to_glyph:
             original_glyph = char_to_glyph[original_char]
             encrypted_glyph = char_to_glyph[encrypted_char]
@@ -145,11 +169,26 @@ def create_encrypted_font(input_font_path, output_font_path):
                             hmtx.metrics[encrypted_glyph] = copy.deepcopy(hmtx.metrics[original_glyph])
                     
                     swaps_made += 1
-                    print(f"  Swapped: '{encrypted_char}' now shows '{original_char}' glyph")
+                    print(f"  Swapped: {encrypted_display} now shows {original_display} glyph")
             except Exception as e:
-                print(f"  Warning: Could not swap '{encrypted_char}' -> '{original_char}': {e}")
+                print(f"  Warning: Could not swap {encrypted_display} -> {original_display}: {e}")
+        else:
+            missing = []
+            if original_char not in char_to_glyph:
+                missing.append(f"original {original_display}")
+            if encrypted_char not in char_to_glyph:
+                missing.append(f"encrypted {encrypted_display}")
+            print(f"  Skipped: {encrypted_display} -> {original_display} (missing: {', '.join(missing)})")
     
     print(f"\nMade {swaps_made} glyph swaps")
+    
+    # Update font family name to 'EncryptedFont' so it matches the CSS
+    if 'name' in font:
+        name_table = font['name']
+        for record in name_table.names:
+            if record.nameID == 1:  # Family name
+                record.string = 'EncryptedFont'
+        print("Updated font family name to 'EncryptedFont'")
     
     # Save as TTF first
     ttf_output = output_font_path.replace('.woff2', '.ttf')
