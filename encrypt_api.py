@@ -11,6 +11,12 @@ from collections import Counter
 import hashlib
 import os
 from Fiesty import enc, dec
+from generate_font import (
+    create_decryption_font_from_mappings,
+    get_dynamic_mappings,
+    UPPERCASE,
+    LOWERCASE,
+)
 
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests from news websites
@@ -21,74 +27,7 @@ CORS(app)  # Allow cross-origin requests from news websites
 
 # Secret key will be provided as input to the API
 
-# Character sets for mapping
-# Now includes space as position 26 (0-25 for letters, 26 for space)
-UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # 26 chars -> [0..25]
-LOWERCASE = "abcdefghijklmnopqrstuvwxyz"  # 26 chars -> [0..25]
-SPACE_CHAR = " "  # 1 char -> [26]
 LIGATURES = {"\ufb00":"ff","\ufb01":"fi","\ufb02":"fl","\ufb03":"ffi","\ufb04":"ffl"}
-
-# Note: generate_char_mapping is NOT cached to ensure fresh mappings
-def generate_char_mapping(sk: int, nonce: int, char_set: str) -> dict:
-    """
-    Generate dynamic character mapping using Feistel cipher.
-    Maps each character in char_set to its encrypted version.
-    Now supports 0-26 range (position 26 is space).
-    
-    Args:
-        sk: Secret key
-        nonce: Nonce value
-        char_set: String of characters to map (e.g., "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    
-    Returns:
-        Dictionary mapping original char -> encrypted char
-    """
-    mapping = {}
-    for i, char in enumerate(char_set):
-        # Encrypt the position [0..25] using Feistel cipher (now supports 0-26)
-        encrypted_pos = enc(sk, nonce, i)
-        # Map to the character at that position
-        # If encrypted_pos is 26, map to space; otherwise map to char_set[encrypted_pos]
-        if encrypted_pos < len(char_set):
-            mapping[char] = char_set[encrypted_pos]
-        else:
-            # Position 26 maps to space
-            mapping[char] = ' '
-    return mapping
-
-def generate_reverse_mapping(sk: int, nonce: int, char_set: str) -> dict:
-    """
-    Generate reverse mapping for decryption.
-    Maps encrypted char -> original char.
-    """
-    forward = generate_char_mapping(sk, nonce, char_set)
-    return {v: k for k, v in forward.items()}
-
-def get_dynamic_mappings(sk: int, nonce: int) -> tuple:
-    """
-    Get all dynamic mappings (uppercase, lowercase, space) for given sk and nonce.
-    Returns (upper_map, lower_map, space_map)
-    Now space is a regular character at position 26, not a special mapping.
-    """
-    upper_map = generate_char_mapping(sk, nonce, UPPERCASE)
-    lower_map = generate_char_mapping(sk, nonce, LOWERCASE)
-    
-    # Space is now a regular character - create mapping for it
-    # Space is at position 26, encrypt it using Feistel
-    space_encrypted_pos = enc(sk, nonce, 26)
-    # Map to character at that position (0-25 maps to letters, 26 maps to space)
-    if space_encrypted_pos < 26:
-        # Map to lowercase letter (we'll use lowercase for space mapping)
-        space_map = {" ": LOWERCASE[space_encrypted_pos]}
-    else:
-        # If it encrypts to 26, it stays as space
-        space_map = {" ": " "}
-    
-    # Other special characters (null -> newline)
-    special_map = {"\x00": "\n"}
-    space_map.update(special_map)
-    
-    return upper_map, lower_map, space_map 
 
 def expand_ligatures(s: str) -> str:
     """EXACT copy from EncTestNewTestF.py"""
@@ -290,25 +229,61 @@ def encrypt_article():
         # Debug: Log the secret_key being used
         print(f"DEBUG: Encrypting text='{article_text[:20]}...' with secret_key={secret_key} (type: {type(secret_key).__name__})")
         
-        # Use dynamic Feistel cipher encryption
-        encrypted_text = encrypt_article_text(article_text, secret_key)
+        # Step 1: Expand ligatures and calculate nonce (needed for mapping)
+        expanded = expand_ligatures(article_text)
+        nonce = nonce_creator(expanded)
+        
+        # Step 2: Get mappings once (will be reused for both encryption and font generation)
+        upper_map, lower_map, space_map = get_dynamic_mappings(secret_key, nonce)
+        
+        # Step 3: Use mappings to encrypt the text
+        combined_map = {**space_map, **upper_map, **lower_map}
+        encrypted_text = ''.join(combined_map.get(char, char) for char in expanded)
         
         # Debug: Log the result
         print(f"DEBUG: Encrypted result: '{encrypted_text}'")
         
-        # Calculate nonce for decryption (needed to decrypt later)
-        expanded = expand_ligatures(article_text)
-        nonce = nonce_creator(expanded)
+        # Step 4: Generate unique font filename based on secret_key and nonce
+        # This ensures each unique encryption gets its own font file
+        font_hash = hashlib.md5(f"{secret_key}_{nonce}".encode('utf-8')).hexdigest()[:12]
+        fonts_dir = os.path.join(os.path.dirname(__file__), 'fonts')
+        os.makedirs(fonts_dir, exist_ok=True)
+        font_filename = f"decryption_{font_hash}.woff2"
+        font_path = os.path.join(fonts_dir, font_filename)
         
-        # Return encrypted text, nonce, and font URL
-        # The font URL should point to your CDN where the custom font is hosted
-        font_url = os.environ.get('FONT_URL', 'https://your-cdn.com/fonts/encrypted.woff2')
+        # Base font path
+        base_font_path = os.path.join(os.path.dirname(__file__), 'Supertest.ttf')
+        
+        # Step 5: Generate the decryption font using the same mappings (no recalculation!)
+        try:
+            if os.path.exists(base_font_path):
+                # Check if font already exists to avoid regenerating
+                if os.path.exists(font_path):
+                    print(f"Font already exists: {font_filename}, skipping generation")
+                else:
+                    print(f"Generating decryption font: {font_filename}")
+                    create_decryption_font_from_mappings(base_font_path, font_path, upper_map, lower_map, space_map)
+                    print(f"✅ Decryption font generated: {font_filename}")
+                
+                # Generate font URL (use local server URL if not in production)
+                base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
+                font_url = f"{base_url}/fonts/{font_filename}"
+            else:
+                print(f"Warning: Base font not found at {base_font_path}, skipping font generation")
+                font_url = os.environ.get('FONT_URL', 'https://your-cdn.com/fonts/encrypted.woff2')
+        except Exception as e:
+            print(f"Error generating font: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to default font URL if generation fails
+            font_url = os.environ.get('FONT_URL', 'https://your-cdn.com/fonts/encrypted.woff2')
         
         return jsonify({
             'encrypted': encrypted_text,
             'nonce': nonce,  # Include nonce for decryption
             'secret_key_used': secret_key,  # Debug: show what secret_key was actually used
-            'font_url': font_url
+            'font_url': font_url,
+            'font_filename': font_filename  # Include filename for reference
         })
     
     except Exception as e:
@@ -426,19 +401,70 @@ def encrypt_articles_batch():
         
         # Encrypt all texts using dynamic Feistel cipher
         encrypted_texts = []
+        nonces = []
+        font_urls = {}  # Map nonce -> font_url
+        mappings_cache = {}  # Cache mappings by nonce to avoid recalculation
+        
+        # Base font path
+        base_font_path = os.path.join(os.path.dirname(__file__), 'Supertest.ttf')
+        fonts_dir = os.path.join(os.path.dirname(__file__), 'fonts')
+        os.makedirs(fonts_dir, exist_ok=True)
+        base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
+        
         for text in texts:
             if not text or not isinstance(text, str):
                 encrypted_texts.append('')
+                nonces.append(None)
                 continue
             
-            encrypted = encrypt_article_text(text, secret_key)
+            # Expand ligatures and calculate nonce
+            expanded = expand_ligatures(text)
+            nonce = nonce_creator(expanded)
+            nonces.append(nonce)
+            
+            # Get mappings (use cache if available)
+            if nonce not in mappings_cache:
+                upper_map, lower_map, space_map = get_dynamic_mappings(secret_key, nonce)
+                mappings_cache[nonce] = (upper_map, lower_map, space_map)
+            else:
+                upper_map, lower_map, space_map = mappings_cache[nonce]
+            
+            # Use mappings to encrypt the text
+            combined_map = {**space_map, **upper_map, **lower_map}
+            encrypted = ''.join(combined_map.get(char, char) for char in expanded)
             encrypted_texts.append(encrypted)
+            
+            # Generate font for this nonce if we haven't already
+            if nonce not in font_urls:
+                font_hash = hashlib.md5(f"{secret_key}_{nonce}".encode('utf-8')).hexdigest()[:12]
+                font_filename = f"decryption_{font_hash}.woff2"
+                font_path = os.path.join(fonts_dir, font_filename)
+                
+                try:
+                    if os.path.exists(base_font_path):
+                        # Check if font already exists to avoid regenerating
+                        if os.path.exists(font_path):
+                            print(f"Font already exists for batch: {font_filename}, skipping generation")
+                        else:
+                            print(f"Generating decryption font for batch: {font_filename}")
+                            # Use cached mappings - no recalculation!
+                            create_decryption_font_from_mappings(base_font_path, font_path, upper_map, lower_map, space_map)
+                        font_urls[nonce] = f"{base_url}/fonts/{font_filename}"
+                    else:
+                        font_urls[nonce] = os.environ.get('FONT_URL', 'https://your-cdn.com/fonts/encrypted.woff2')
+                except Exception as e:
+                    print(f"Error generating font for nonce {nonce}: {e}")
+                    font_urls[nonce] = os.environ.get('FONT_URL', 'https://your-cdn.com/fonts/encrypted.woff2')
         
-        font_url = os.environ.get('FONT_URL', 'https://your-cdn.com/fonts/encrypted.woff2')
+        # Use the first font URL as the primary font_url for backward compatibility
+        primary_font_url = font_urls.get(nonces[0] if nonces else None, 
+                                        os.environ.get('FONT_URL', 'https://your-cdn.com/fonts/encrypted.woff2'))
         
         return jsonify({
             'encrypted': encrypted_texts,
-            'font_url': font_url
+            'nonces': nonces,  # Include nonces for each encrypted text
+            'font_url': primary_font_url,  # Primary font URL (backward compatibility)
+            'font_urls': font_urls  # Map of nonce -> font_url for each unique encryption
         })
     
     except Exception as e:
