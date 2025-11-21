@@ -1,0 +1,17 @@
+# Cloudflare R2 Configuration Template
+# Copy these to your .env file or set as environment variables
+# Get these from: Cloudflare Dashboard > R2 > Manage R2 API Tokens
+
+R2_ACCOUNT_ID=9202ba46f1df67a4ccf9fc1fbd49c54b
+R2_ACCESS_KEY_ID=749a0a5e42229248d0838c43669e93ba
+R2_SECRET_ACCESS_KEY=8a40d733e49c0da67423a691d3d1138dfbf06263cb00d46c25295482f2949ec2
+R2_BUCKET_NAME=fonts
+R2_PUBLIC_URL=https://pub-5eb60ded9abd4136b4908ea55a742d6e.r2.dev
+
+# Set to 'true' to automatically upload fonts to R2 and use R2 URLs
+# Set to 'false' to serve fonts locally from /fonts/ endpoint
+USE_R2_FONTS=true
+
+# Optional: Base URL for your API (used for local font URLs if R2 is not used)
+# BASE_URL=http://localhost:5000
+

@@ -74,70 +74,65 @@
     </style>
 </head>
 <body>
-    <h1>🔐 Font Mapping Test</h1>
+    <h1>🔐 Font Mapping Test (Dynamic Font)</h1>
     
-    <div id="status" class="status info">Loading font and testing mapping...</div>
+    <div class="test-section">
+        <div class="test-title">Configuration</div>
+        <div style="margin-bottom: 15px;">
+            <label for="secretKey" style="display: block; margin-bottom: 5px;">Secret Key:</label>
+            <input type="number" id="secretKey" value="29202393" style="padding: 8px; width: 200px; background: #1a1a1a; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 16px;">
+            <button onclick="runTests()" style="margin-left: 10px; padding: 8px 20px; background: #4CAF50; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 16px;">Generate Font & Test</button>
+        </div>
+        <div id="status" class="status info">Enter a secret key and click "Generate Font & Test" to begin...</div>
+    </div>
     
     <div class="test-section">
         <div class="test-title">Test 1: Basic Text Encryption</div>
         <div class="original">Original: "Hello World"</div>
-        <div class="encrypted" id="test1">Loading...</div>
+        <div class="encrypted" id="test1">Waiting for test...</div>
     </div>
     
     <div class="test-section">
         <div class="test-title">Test 2: Alphabet Test</div>
         <div class="original">Original: "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz"</div>
-        <div class="encrypted" id="test2">Loading...</div>
+        <div class="encrypted" id="test2">Waiting for test...</div>
     </div>
     
     <div class="test-section">
         <div class="test-title">Test 3: Sentence Test</div>
         <div class="original">Original: "The quick brown fox jumps over the lazy dog"</div>
-        <div class="encrypted" id="test3">Loading...</div>
+        <div class="encrypted" id="test3">Waiting for test...</div>
     </div>
     
     <div class="test-section">
-        <div class="test-title">Character Mapping Reference</div>
-        <div class="mapping-table" id="mappingTable"></div>
+        <div class="test-title">Font Information</div>
+        <div id="fontInfo" style="color: #888;">No font loaded yet</div>
     </div>
     
     <script>
-        // Encryption algorithm (same as backend)
-        const LIGATURES = {"\ufb00":"ff","\ufb01":"fi","\ufb02":"fl","\ufb03":"ffi","\ufb04":"ffl"};
-        const SPECIAL_MAP = {" ": "r", "\x00": "\n"};
-        const UPPER_MAP = {
-            "R":"A","F":"B","M":"C","S":"D","E":"E","H":"F","D":"G","G":"H","N":"I","A":"J",
-            "K":"K","C":"L","Y":"M","U":"N","L":"O","P":"P","X":"Q","V":"R","I":"S","Q":"T",
-            "T":"U","O":"V","W":"W","B":"X","Z":"Y","J":"Z"
-        };
-        const LOWER_MAP = {
-            "r":"a","f":"b","m":"c","s":"d","e":"e","h":"f","d":"g","g":"h",
-            "n":"i","a":"j","k":"k","c":"l","y":"m","u":"n","l":"o","p":"p",
-            "x":"q","v":" ","i":"s","q":"t","t":"u","o":"v","w":"w",
-            "b":"x","z":"y","j":"z"
-        };
-        const COMBINED_MAP = {...SPECIAL_MAP, ...UPPER_MAP, ...LOWER_MAP};
+        let currentFontUrl = null;
+        let currentNonce = null;
         
-        function expandLigatures(text) {
-            return text.split('').map(ch => LIGATURES[ch] || ch).join('');
-        }
-        
-        function encryptText(text) {
-            const expanded = expandLigatures(text);
-            return expanded.split('').map(ch => COMBINED_MAP[ch] || ch).join('');
-        }
-        
-        // Load font from Cloudflare R2
-        async function loadFont() {
+        // Load dynamically generated font from API
+        async function loadFont(fontUrl) {
             try {
-                const fontUrl = 'https://pub-5eb60ded9abd4136b4908ea55a742d6e.r2.dev/Supertest.woff2';
-                const fontCacheBuster = '?v=' + Date.now() + '&t=' + Math.random();
-                const font = new FontFace('EncryptedFont', `url(${fontUrl}${fontCacheBuster})`);
+                if (!fontUrl) {
+                    throw new Error('No font URL provided');
+                }
+                
+                // Remove old font if exists
+                const existingFont = document.fonts.get('EncryptedFont');
+                if (existingFont) {
+                    document.fonts.delete(existingFont);
+                }
+                
+                // Load new font
+                const font = new FontFace('EncryptedFont', `url(${fontUrl})`);
                 await font.load();
                 document.fonts.add(font);
                 
                 // Wait a bit for font to be ready
-                await new Promise(resolve => setTimeout(resolve, 100));
+                await new Promise(resolve => setTimeout(resolve, 200));
                 
                 return true;
             } catch (error) {
@@ -146,68 +141,124 @@
             }
         }
         
-        // Test font mapping
-        function testFontMapping() {
-            const statusDiv = document.getElementById('status');
-            
-            // Test 1
-            const test1Text = "Hello World";
-            const encrypted1 = encryptText(test1Text);
-            document.getElementById('test1').textContent = encrypted1;
-            
-            // Test 2
-            const test2Text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz";
-            const encrypted2 = encryptText(test2Text);
-            document.getElementById('test2').textContent = encrypted2;
-            
-            // Test 3
-            const test3Text = "The quick brown fox jumps over the lazy dog";
-            const encrypted3 = encryptText(test3Text);
-            document.getElementById('test3').textContent = encrypted3;
-            
-            // Create mapping table
-            const mappingTable = document.getElementById('mappingTable');
-            const allMappings = [
-                ...Object.entries(UPPER_MAP).map(([k, v]) => ({original: k, encrypted: v, type: 'upper'})),
-                ...Object.entries(LOWER_MAP).map(([k, v]) => ({original: k, encrypted: v, type: 'lower'})),
-                ...Object.entries(SPECIAL_MAP).map(([k, v]) => ({original: k === ' ' ? 'SPACE' : k, encrypted: v, type: 'special'}))
-            ];
-            
-            mappingTable.innerHTML = mappingTable.innerHTML = mappingTable.innerHTML = '';
-            allMappings.forEach(({original, encrypted, type}) => {
-                const item = document.createElement('div');
-                item.className = 'mapping-item';
-                item.innerHTML = `
-                    <strong>${original === 'SPACE' ? '[SPACE]' : original}</strong> → 
-                    <span class="char-display">${encrypted}</span>
-                    <span style="color: #888; font-size: 12px;">(${type})</span>
-                `;
-                mappingTable.appendChild(item);
-            });
-            
-            // Check if font is loaded
-            setTimeout(() => {
-                const fontCheck = document.fonts.check('24px EncryptedFont');
-                if (fontCheck) {
-                    statusDiv.className = 'status success';
-                    statusDiv.textContent = '✅ Font loaded successfully! Encrypted text should display as readable text.';
-                } else {
-                    statusDiv.className = 'status error';
-                    statusDiv.textContent = '⚠️ Font may not be loaded. Encrypted text may appear garbled. Check console for errors.';
+        // Encrypt text using API
+        async function encryptText(text, secretKey) {
+            try {
+                const response = await fetch('/api/encrypt', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        text: text,
+                        secret_key: secretKey
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Encryption failed');
                 }
-            }, 500);
+                
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.error('Encryption error:', error);
+                throw error;
+            }
         }
         
-        // Run test
-        (async () => {
-            const fontLoaded = await loadFont();
-            if (fontLoaded) {
-                testFontMapping();
-            } else {
-                document.getElementById('status').className = 'status error';
-                document.getElementById('status').textContent = '❌ Failed to load font from Cloudflare R2. Check console for errors.';
+        // Run tests with dynamic font
+        async function runTests() {
+            const statusDiv = document.getElementById('status');
+            const secretKeyInput = document.getElementById('secretKey');
+            const secretKey = parseInt(secretKeyInput.value);
+            
+            if (!secretKey || isNaN(secretKey)) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Please enter a valid secret key';
+                return;
             }
-        })();
+            
+            statusDiv.className = 'status info';
+            statusDiv.textContent = '🔄 Encrypting text and generating font...';
+            
+            // Clear previous results
+            document.getElementById('test1').textContent = 'Loading...';
+            document.getElementById('test2').textContent = 'Loading...';
+            document.getElementById('test3').textContent = 'Loading...';
+            document.getElementById('fontInfo').textContent = 'Loading...';
+            
+            try {
+                // Test texts
+                const test1Text = "Hello World";
+                const test2Text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz";
+                const test3Text = "The quick brown fox jumps over the lazy dog";
+                
+                // Encrypt first text to get font URL (all texts with same nonce will use same font)
+                const result1 = await encryptText(test1Text, secretKey);
+                const fontUrl = result1.font_url;
+                currentFontUrl = fontUrl;
+                currentNonce = result1.nonce;
+                
+                // Load the font
+                statusDiv.textContent = '🔄 Loading font...';
+                const fontLoaded = await loadFont(fontUrl);
+                
+                if (!fontLoaded) {
+                    statusDiv.className = 'status error';
+                    statusDiv.textContent = '❌ Failed to load font. Check console for errors.';
+                    return;
+                }
+                
+                // Encrypt all test texts
+                statusDiv.textContent = '🔄 Encrypting test texts...';
+                const [result2, result3] = await Promise.all([
+                    encryptText(test2Text, secretKey),
+                    encryptText(test3Text, secretKey)
+                ]);
+                
+                // Display encrypted texts
+                document.getElementById('test1').textContent = result1.encrypted;
+                document.getElementById('test2').textContent = result2.encrypted;
+                document.getElementById('test3').textContent = result3.encrypted;
+                
+                // Display font info
+                const fontInfo = document.getElementById('fontInfo');
+                fontInfo.innerHTML = `
+                    <div style="margin-bottom: 10px;"><strong>Font URL:</strong> <a href="${fontUrl}" target="_blank" style="color: #4CAF50;">${fontUrl}</a></div>
+                    <div style="margin-bottom: 10px;"><strong>Font Filename:</strong> ${result1.font_filename}</div>
+                    <div style="margin-bottom: 10px;"><strong>Nonce:</strong> ${result1.nonce}</div>
+                    <div><strong>Secret Key:</strong> ${secretKey}</div>
+                `;
+                
+                // Check if font is loaded
+                setTimeout(() => {
+                    const fontCheck = document.fonts.check('24px EncryptedFont');
+                    if (fontCheck) {
+                        statusDiv.className = 'status success';
+                        statusDiv.textContent = `✅ Font loaded successfully! Encrypted text should display as readable text. (Nonce: ${result1.nonce})`;
+                    } else {
+                        statusDiv.className = 'status error';
+                        statusDiv.textContent = '⚠️ Font may not be loaded. Encrypted text may appear garbled. Check console for errors.';
+                    }
+                }, 500);
+                
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = `❌ Error: ${error.message}`;
+                console.error('Test error:', error);
+            }
+        }
+        
+        // Auto-run on page load if secret key is present
+        window.addEventListener('load', () => {
+            const secretKeyInput = document.getElementById('secretKey');
+            if (secretKeyInput.value) {
+                // Small delay to ensure page is fully loaded
+                setTimeout(() => runTests(), 500);
+            }
+        });
     </script>
 </body>
 </html>

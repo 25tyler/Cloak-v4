@@ -77,109 +77,55 @@ def get_dynamic_mappings(sk: int, nonce: int) -> tuple:
 
 def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mapping_special):
     """
-    Helper function to swap glyphs in a font based on mappings.
-    Returns the number of swaps made.
+    Apply the encrypted->original permutation at the glyph level.
+    We take a snapshot of all source glyphs/metrics first, then rewrite the
+    destination glyphs from the snapshot so cycles don't overwrite each other.
+    Returns the number of successful swaps.
     """
-    # Get the cmap (character map) table
     cmap = font.getBestCmap()
-    
-    # Get glyph set
-    glyph_set = font.getGlyphSet()
-    
-    # Create a mapping of char -> glyph name
-    char_to_glyph = {}
-    for unicode_val, glyph_name in cmap.items():
-        char_to_glyph[chr(unicode_val)] = glyph_name
-    
+    char_to_glyph = {chr(unicode_val): glyph_name for unicode_val, glyph_name in cmap.items()}
+    glyf_table = font['glyf']
+    hmtx = font['hmtx'] if 'hmtx' in font else None
+
+    # Build a unified mapping list (dest_glyph, src_glyph, display strings)
+    mappings = []
+    for mapping in (font_mapping_upper, font_mapping_lower, font_mapping_special):
+        for encrypted_char, original_char in mapping.items():
+            if original_char in char_to_glyph and encrypted_char in char_to_glyph:
+                src_glyph = char_to_glyph[original_char]
+                dest_glyph = char_to_glyph[encrypted_char]
+                mappings.append((dest_glyph, src_glyph, encrypted_char, original_char))
+            else:
+                missing = []
+                if original_char not in char_to_glyph:
+                    missing.append(f"original {repr(original_char)}")
+                if encrypted_char not in char_to_glyph:
+                    missing.append(f"encrypted {repr(encrypted_char)}")
+                print(f"  Skipped: {repr(encrypted_char)} -> {repr(original_char)} (missing: {', '.join(missing)})")
+
+    # Snapshot source glyphs and metrics so cycles can't clobber later copies
+    glyph_snapshot = {}
+    metrics_snapshot = {}
+    for _, src_glyph, _, _ in mappings:
+        if src_glyph in glyf_table:
+            glyph_snapshot[src_glyph] = copy.deepcopy(glyf_table[src_glyph])
+        if hmtx and src_glyph in hmtx.metrics:
+            metrics_snapshot[src_glyph] = copy.deepcopy(hmtx.metrics[src_glyph])
+
     swaps_made = 0
-    
-    # Uppercase letters
-    for encrypted_char, original_char in font_mapping_upper.items():
-        if original_char in char_to_glyph and encrypted_char in char_to_glyph:
-            original_glyph = char_to_glyph[original_char]
-            encrypted_glyph = char_to_glyph[encrypted_char]
-            
-            try:
-                glyf_table = font['glyf']
-                if original_glyph in glyf_table and encrypted_glyph in glyf_table:
-                    original_glyph_obj = glyf_table[original_glyph]
-                    glyf_table[encrypted_glyph] = copy.deepcopy(original_glyph_obj)
-                    
-                    # Also copy horizontal metrics (width, lsb) if hmtx table exists
-                    if 'hmtx' in font:
-                        hmtx = font['hmtx']
-                        if original_glyph in hmtx.metrics and encrypted_glyph in hmtx.metrics:
-                            hmtx.metrics[encrypted_glyph] = copy.deepcopy(hmtx.metrics[original_glyph])
-                    
-                    swaps_made += 1
-                    print(f"  Swapped: '{encrypted_char}' now shows '{original_char}' glyph")
-            except Exception as e:
-                print(f"  Warning: Could not swap '{encrypted_char}' -> '{original_char}': {e}")
-    
-    # Lowercase letters
-    for encrypted_char, original_char in font_mapping_lower.items():
-        encrypted_display = repr(encrypted_char) if encrypted_char == ' ' else f"'{encrypted_char}'"
-        original_display = repr(original_char) if original_char == ' ' else f"'{original_char}'"
-        
-        if original_char in char_to_glyph and encrypted_char in char_to_glyph:
-            original_glyph = char_to_glyph[original_char]
-            encrypted_glyph = char_to_glyph[encrypted_char]
-            
-            try:
-                glyf_table = font['glyf']
-                if original_glyph in glyf_table and encrypted_glyph in glyf_table:
-                    original_glyph_obj = glyf_table[original_glyph]
-                    glyf_table[encrypted_glyph] = copy.deepcopy(original_glyph_obj)
-                    
-                    if 'hmtx' in font:
-                        hmtx = font['hmtx']
-                        if original_glyph in hmtx.metrics and encrypted_glyph in hmtx.metrics:
-                            hmtx.metrics[encrypted_glyph] = copy.deepcopy(hmtx.metrics[original_glyph])
-                    
-                    swaps_made += 1
-                    print(f"  Swapped: {encrypted_display} now shows {original_display} glyph")
-            except Exception as e:
-                print(f"  Warning: Could not swap {encrypted_display} -> {original_display}: {e}")
-        else:
-            missing = []
-            if original_char not in char_to_glyph:
-                missing.append(f"original '{original_char}'")
-            if encrypted_char not in char_to_glyph:
-                missing.append(f"encrypted {encrypted_display}")
-            print(f"  Skipped: {encrypted_display} -> {original_display} (missing: {', '.join(missing)})")
-    
-    # Special characters (space, null)
-    for encrypted_char, original_char in font_mapping_special.items():
-        encrypted_display = repr(encrypted_char) if encrypted_char in [' ', '\x00', '\n'] else f"'{encrypted_char}'"
-        original_display = repr(original_char) if original_char in [' ', '\x00', '\n'] else f"'{original_char}'"
-        
-        if original_char in char_to_glyph and encrypted_char in char_to_glyph:
-            original_glyph = char_to_glyph[original_char]
-            encrypted_glyph = char_to_glyph[encrypted_char]
-            
-            try:
-                glyf_table = font['glyf']
-                if original_glyph in glyf_table and encrypted_glyph in glyf_table:
-                    original_glyph_obj = glyf_table[original_glyph]
-                    glyf_table[encrypted_glyph] = copy.deepcopy(original_glyph_obj)
-                    
-                    if 'hmtx' in font:
-                        hmtx = font['hmtx']
-                        if original_glyph in hmtx.metrics and encrypted_glyph in hmtx.metrics:
-                            hmtx.metrics[encrypted_glyph] = copy.deepcopy(hmtx.metrics[original_glyph])
-                    
-                    swaps_made += 1
-                    print(f"  Swapped: {encrypted_display} now shows {original_display} glyph")
-            except Exception as e:
-                print(f"  Warning: Could not swap {encrypted_display} -> {original_display}: {e}")
-        else:
-            missing = []
-            if original_char not in char_to_glyph:
-                missing.append(f"original {original_display}")
-            if encrypted_char not in char_to_glyph:
-                missing.append(f"encrypted {encrypted_display}")
-            print(f"  Skipped: {encrypted_display} -> {original_display} (missing: {', '.join(missing)})")
-    
+    for dest_glyph, src_glyph, encrypted_char, original_char in mappings:
+        try:
+            if src_glyph in glyph_snapshot and dest_glyph in glyf_table:
+                glyf_table[dest_glyph] = copy.deepcopy(glyph_snapshot[src_glyph])
+                if hmtx and src_glyph in metrics_snapshot and dest_glyph in hmtx.metrics:
+                    hmtx.metrics[dest_glyph] = copy.deepcopy(metrics_snapshot[src_glyph])
+                swaps_made += 1
+                enc_disp = repr(encrypted_char) if encrypted_char in [' ', '\x00', '\n'] else f"'{encrypted_char}'"
+                orig_disp = repr(original_char) if original_char in [' ', '\x00', '\n'] else f"'{original_char}'"
+                print(f"  Swapped: {enc_disp} now shows {orig_disp} glyph")
+        except Exception as e:
+            print(f"  Warning: Could not swap {repr(encrypted_char)} -> {repr(original_char)}: {e}")
+
     return swaps_made
 
 def create_decryption_font_from_mappings(input_font_path, output_font_path, upper_map, lower_map, space_map):
