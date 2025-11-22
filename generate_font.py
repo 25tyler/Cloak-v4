@@ -120,18 +120,29 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
                 # Copy the glyph outline
                 glyf_table[dest_glyph] = copy.deepcopy(glyph_snapshot[src_glyph])
                 # Copy the horizontal metrics (advance width and left side bearing)
-                # This ensures proper spacing and prevents clipping at line breaks
-                # CRITICAL FIX: Always ensure destination has proper metrics
-                # This prevents random text breaking due to inconsistent metrics
+                # CRITICAL: Always use source metrics for zero visual change
+                # Source metrics = what original text used = what we must preserve exactly
+                # This ensures encrypted text has identical layout to original
                 if hmtx:
+                    source_metrics = None
+                    
+                    # Try to get source metrics (prefer snapshot, then direct access)
                     if src_glyph in metrics_snapshot:
-                        # Source has metrics in snapshot - copy them (preferred method)
-                        hmtx.metrics[dest_glyph] = copy.deepcopy(metrics_snapshot[src_glyph])
+                        source_metrics = copy.deepcopy(metrics_snapshot[src_glyph])
                     elif src_glyph in hmtx.metrics:
-                        # Source has metrics but wasn't in snapshot - copy directly
-                        hmtx.metrics[dest_glyph] = copy.deepcopy(hmtx.metrics[src_glyph])
-                    # If source has no metrics, destination keeps its original metrics (if any)
-                    # This ensures we never leave a glyph without metrics
+                        source_metrics = copy.deepcopy(hmtx.metrics[src_glyph])
+                    
+                    if source_metrics:
+                        # Use source metrics - this preserves original layout exactly
+                        # Works for all cases: space->letter, letter->letter, letter->space
+                        hmtx.metrics[dest_glyph] = source_metrics
+                    elif dest_glyph in hmtx.metrics:
+                        # Fallback: if source has no metrics, keep destination's original
+                        # This is better than leaving it without metrics
+                        pass
+                    else:
+                        # Both missing - this shouldn't happen in normal fonts
+                        print(f"  Warning: No metrics available for {src_glyph} -> {dest_glyph}")
                 swaps_made += 1
                 enc_disp = repr(encrypted_char) if encrypted_char in [' ', '\x00', '\n'] else f"'{encrypted_char}'"
                 orig_disp = repr(original_char) if original_char in [' ', '\x00', '\n'] else f"'{original_char}'"
