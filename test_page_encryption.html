@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Page Encryption Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        p {
+            line-height: 1.6;
+            color: #666;
+            margin: 15px 0;
+        }
+        .article {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Automatic Page Encryption Test</h1>
+    
+    <div class="info">
+        <p><strong>This page demonstrates automatic encryption.</strong> All text on this page should be encrypted automatically when the page loads. The encryption happens with a single API call.</p>
+    </div>
+    
+    <div class="article">
+        <h2>Sample Article One</h2>
+        <p>This is the first paragraph of the article. It contains some text that should be encrypted automatically. The encryption system will process all text nodes on the page in a single API call.</p>
+        <p>Here is another paragraph with more content. The system extracts all text from the page, sends it to the API once, and then replaces all the text with encrypted versions.</p>
+    </div>
+    
+    <div class="article">
+        <h2>Sample Article Two</h2>
+        <p>This is a second article on the same page. All of its text should also be encrypted automatically. The encryption uses a custom font to display the encrypted text as readable content.</p>
+        <p>Multiple paragraphs and sections are all handled in one go. There's no need to configure anything or add special markup to the HTML.</p>
+    </div>
+    
+    <div class="article">
+        <h2>How It Works</h2>
+        <p>The encryption script extracts all text nodes from the page, sends them to the API in a single request, receives encrypted versions back, and then replaces the original text with encrypted text while applying a custom font that makes it readable.</p>
+    </div>
+    
+    <script src="/client/encrypt-page.js" data-api-url="/api/encrypt/page" data-secret-key="29202393"></script>
+</body>
+</html>
+

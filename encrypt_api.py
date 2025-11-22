@@ -36,6 +36,9 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests from news websites
 
+# Debug mode - set via environment variable
+DEBUG_MODE = os.environ.get('DEBUG', 'false').lower() == 'true'
+
 # ============================================================================
 # DYNAMIC ENCRYPTION USING FEISTEL CIPHER
 # ============================================================================
@@ -252,10 +255,14 @@ def upload_font_to_r2(font_path: str, font_filename: str) -> str:
         
         # Return public URL
         r2_url = f"{r2_public_url.rstrip('/')}/{font_filename}"
-        print(f"✅ Font uploaded to R2: {r2_url}")
+        if DEBUG_MODE:
+            print(f"✅ Font uploaded to R2: {r2_url}")
         return r2_url
     except Exception as e:
-        print(f"⚠️ Failed to upload font to R2: {e}")
+        if DEBUG_MODE:
+            print(f"⚠️ Failed to upload font to R2: {e}")
+            import traceback
+            traceback.print_exc()
         return None
 
 def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, space_map, base_url: str = None):
@@ -273,29 +280,59 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
     font_path = os.path.join(fonts_dir, font_filename)
 
     if not os.path.exists(base_font_path):
-        print(f"Warning: Base font not found at {base_font_path}, skipping generation")
+        if DEBUG_MODE:
+            print(f"Warning: Base font not found at {base_font_path}, skipping generation")
         return font_filename, fallback_url
 
     try:
         font_was_generated = False
         if os.path.exists(font_path):
-            print(f"Font already exists: {font_filename}, skipping regeneration")
+            if DEBUG_MODE:
+                print(f"Font already exists locally: {font_filename}")
         else:
-            print(f"Generating decryption font: {font_filename}")
+            if DEBUG_MODE:
+                print(f"Generating decryption font: {font_filename}")
             create_decryption_font_from_mappings(base_font_path, font_path, upper_map, lower_map, space_map)
             font_was_generated = True
         
-        # Try to upload to R2 (only if font was just generated or R2 upload is enabled)
-        # Check if we should use R2 (either font was just generated, or R2 is preferred)
+        # Check if we should use R2
         use_r2 = os.environ.get('USE_R2_FONTS', 'false').lower() == 'true'
         
-        if font_was_generated or use_r2:
+        # Always try to upload to R2 if USE_R2_FONTS is enabled (even if font exists locally)
+        # This ensures fonts are always available on R2
+        if use_r2:
+            if DEBUG_MODE:
+                print(f"USE_R2_FONTS is enabled, uploading {font_filename} to R2...")
+            if not os.path.exists(font_path):
+                if DEBUG_MODE:
+                    print(f"ERROR: Font file does not exist at {font_path}")
+            elif DEBUG_MODE:
+                print(f"Font file exists, size: {os.path.getsize(font_path)} bytes")
+            r2_url = upload_font_to_r2(font_path, font_filename)
+            if r2_url:
+                if DEBUG_MODE:
+                    print(f"✅ Font uploaded to R2: {r2_url}")
+                # Use proxy URL to avoid CORS issues
+                resolved_base = base_url or os.environ.get('BASE_URL', 'http://localhost:5000')
+                proxy_url = f"{resolved_base.rstrip('/')}/proxy-font/{font_filename}"
+                if DEBUG_MODE:
+                    print(f"✅ Using proxy font URL (avoids CORS): {proxy_url}")
+                return font_filename, proxy_url
+            elif DEBUG_MODE:
+                print(f"⚠️ R2 upload failed or not configured, falling back to local URL")
+        elif font_was_generated:
+            # If font was just generated but R2 is not enabled, try uploading anyway (one-time)
+            if DEBUG_MODE:
+                print(f"Font was generated, attempting R2 upload...")
             r2_url = upload_font_to_r2(font_path, font_filename)
             if r2_url:
                 return font_filename, r2_url
         
     except Exception as e:
-        print(f"Error generating font {font_filename}: {e}")
+        if DEBUG_MODE:
+            print(f"Error generating font {font_filename}: {e}")
+            import traceback
+            traceback.print_exc()
         return font_filename, fallback_url
 
     # Return local URL if R2 upload not used
@@ -304,6 +341,8 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
         font_url = f"{resolved_base.rstrip('/')}/fonts/{font_filename}"
     else:
         font_url = fallback_url
+    if DEBUG_MODE:
+        print(f"Using local font URL: {font_url}")
     return font_filename, font_url
 
 # ============================================================================
@@ -350,19 +389,21 @@ def encrypt_article():
         except (ValueError, TypeError):
             return jsonify({'error': 'secret_key must be an integer'}), 400
         
-        # Debug: Log the secret_key being used
-        print(f"DEBUG: Encrypting text='{article_text[:20]}...' with secret_key={secret_key} (type: {type(secret_key).__name__})")
+        # Debug: Log the secret_key being used (only in debug mode)
+        if DEBUG_MODE:
+            print(f"DEBUG: Encrypting text='{article_text[:20]}...' with secret_key={secret_key} (type: {type(secret_key).__name__})")
         
         base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
         encryption = encrypt_article_text(article_text, secret_key, generate_font=True, base_url=base_url)
         
-        # Debug: Log the result
-        print(f"DEBUG: Encrypted result: '{encryption['encrypted']}'")
+        # Debug: Log the result (only in debug mode)
+        if DEBUG_MODE:
+            print(f"DEBUG: Encrypted result: '{encryption['encrypted']}'")
         
         return jsonify({
             'encrypted': encryption['encrypted'],
             'nonce': encryption['nonce'],  # Include nonce for decryption
-            'secret_key_used': secret_key,  # Debug: show what secret_key was actually used
+            'secret_key_used': secret_key if DEBUG_MODE else None,  # Only include in debug mode
             'font_url': encryption['font_url'],
             'font_filename': encryption['font_filename']  # Include filename for reference
         })
@@ -430,6 +471,106 @@ def decrypt_article():
         return jsonify({
             'decrypted': decrypted_text,
             'nonce_used': nonce
+        })
+    
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        traceback.print_exc()
+        return jsonify({'error': error_msg, 'type': type(e).__name__}), 500
+
+@app.route('/api/encrypt/page', methods=['POST'])
+def encrypt_page():
+    """
+    Encrypt entire webpage - extracts and encrypts all text content from HTML.
+    Designed for single API call per page.
+    
+    Request body:
+        {
+            "html": "<html>...</html>",  # Optional: full HTML
+            "texts": ["Text 1", "Text 2", ...],  # All text nodes from page
+            "secret_key": 29202393
+        }
+    
+    Response:
+        {
+            "encrypted_texts": ["Encrypted 1", "Encrypted 2", ...],
+            "font_url": "https://your-cdn.com/fonts/encrypted.woff2",
+            "nonce": 462508
+        }
+    """
+    try:
+        data = request.json
+        
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        texts = data.get('texts', [])
+        secret_key = data.get('secret_key')
+        
+        if not texts or not isinstance(texts, list):
+            return jsonify({'error': 'No texts array provided'}), 400
+        
+        if secret_key is None:
+            return jsonify({'error': 'No secret_key provided'}), 400
+        
+        # Convert secret_key to int if it's a string
+        try:
+            secret_key = int(secret_key)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'secret_key must be an integer'}), 400
+        
+        if len(texts) > 1000:  # Limit batch size for entire pages
+            return jsonify({'error': 'Too many text nodes (max 1000)'}), 400
+        
+        # Filter out empty or very short texts
+        valid_texts = []
+        text_indices = []  # Track original indices
+        for i, text in enumerate(texts):
+            if text and isinstance(text, str) and len(text.strip()) > 0:
+                valid_texts.append(text.strip())
+                text_indices.append(i)
+        
+        if len(valid_texts) == 0:
+            return jsonify({
+                'encrypted_texts': [],
+                'font_url': None,
+                'nonce': None
+            })
+        
+        # Combine all text to calculate a single nonce for the entire page
+        # This ensures consistent encryption across the page
+        combined_text = ' '.join(valid_texts)
+        expanded = expand_ligatures(combined_text)
+        nonce = nonce_creator(expanded)
+        
+        # Get mappings once for the entire page
+        upper_map, lower_map, space_map = get_dynamic_mappings(secret_key, nonce)
+        combined_map = {**space_map, **upper_map, **lower_map}
+        
+        # Encrypt all texts using the same mapping
+        encrypted_texts = []
+        for text in valid_texts:
+            expanded_text = expand_ligatures(text)
+            encrypted = ''.join(combined_map.get(char, char) for char in expanded_text)
+            encrypted_texts.append(encrypted)
+        
+        # Generate font for this encryption
+        base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
+        font_filename, font_url = generate_font_artifacts(
+            secret_key, nonce, upper_map, lower_map, space_map, base_url=base_url
+        )
+        
+        # Create result array matching original indices (with empty strings for filtered texts)
+        result_texts = [''] * len(texts)
+        for idx, encrypted_text in zip(text_indices, encrypted_texts):
+            result_texts[idx] = encrypted_text
+        
+        return jsonify({
+            'encrypted_texts': result_texts,
+            'font_url': font_url,
+            'font_filename': font_filename,
+            'nonce': nonce
         })
     
     except Exception as e:
@@ -538,7 +679,13 @@ def encrypt_articles_batch():
 @app.route('/', methods=['GET'])
 def root():
     """Root endpoint - serve test page"""
-    return send_from_directory(os.path.dirname(__file__), 'test_font_mapping.html')
+    return send_from_directory(os.path.dirname(__file__), 'test_page_encryption.html')
+
+@app.route('/client/encrypt-page.js', methods=['GET'])
+def serve_encrypt_page_script():
+    """Serve the automatic page encryption client script"""
+    client_dir = os.path.join(os.path.dirname(__file__), 'client')
+    return send_from_directory(client_dir, 'encrypt-page.js', mimetype='application/javascript')
 
 @app.route('/api', methods=['GET'])
 def api_info():
@@ -550,6 +697,7 @@ def api_info():
             'encrypt': '/api/encrypt (POST)',
             'decrypt': '/api/decrypt (POST)',
             'batch': '/api/encrypt/batch (POST)',
+            'page': '/api/encrypt/page (POST)',
             'test': '/api/test (POST)',
             'health': '/api/health (GET)',
             'debug_mapping': '/api/debug/mapping (POST)'
@@ -581,15 +729,17 @@ def test_encryption():
         except (ValueError, TypeError):
             return jsonify({'error': 'secret_key must be an integer'}), 400
         
-        # Debug: Log the secret_key being used
-        print(f"DEBUG TEST: Encrypting text='{test_text}' with secret_key={secret_key}")
+        # Debug: Log the secret_key being used (only in debug mode)
+        if DEBUG_MODE:
+            print(f"DEBUG TEST: Encrypting text='{test_text}' with secret_key={secret_key}")
         
         base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
         encryption_result = encrypt_article_text(test_text, secret_key, generate_font=True, base_url=base_url)
         encrypted = encryption_result['encrypted']
         
-        # Debug: Log the result
-        print(f"DEBUG TEST: Encrypted result: '{encrypted}'")
+        # Debug: Log the result (only in debug mode)
+        if DEBUG_MODE:
+            print(f"DEBUG TEST: Encrypted result: '{encrypted}'")
         
         nonce = encryption_result['nonce']
         
@@ -687,14 +837,54 @@ def serve_font(filename):
     fonts_dir = os.path.join(os.path.dirname(__file__), 'fonts')
     return send_from_directory(fonts_dir, filename)
 
+# Proxy endpoint to serve R2 fonts with CORS headers
+@app.route('/proxy-font/<path:filename>')
+def proxy_font(filename):
+    """
+    Proxy font files from R2 to avoid CORS issues.
+    Fetches font from R2 and serves it with proper CORS headers.
+    """
+    try:
+        import requests
+    except ImportError:
+        return jsonify({'error': 'requests library not installed'}), 500
+    
+    r2_public_url = os.environ.get('R2_PUBLIC_URL', 'https://pub-d9bb596a8d3640a78a3d56af3fdebbbc.r2.dev')
+    font_url = f"{r2_public_url.rstrip('/')}/{filename}"
+    
+    try:
+        # Fetch font from R2
+        response = requests.get(font_url, timeout=10)
+        response.raise_for_status()
+        
+        # Return font with proper headers
+        from flask import Response
+        return Response(
+            response.content,
+            mimetype='font/woff2',
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+                'Access-Control-Allow-Headers': '*',
+                'Cache-Control': 'public, max-age=31536000',  # Cache for 1 year
+                'Content-Length': str(len(response.content))
+            }
+        )
+    except requests.exceptions.RequestException as e:
+        if DEBUG_MODE:
+            print(f"Error proxying font {filename}: {e}")
+        return jsonify({'error': f'Failed to fetch font: {str(e)}'}), 500
+
 if __name__ == '__main__':
     # Configuration
-    port = int(os.environ.get('PORT', 5000))
+    # Default to 5001 to avoid macOS AirPlay Receiver conflict on port 5000
+    port = int(os.environ.get('PORT', 5001))
     host = os.environ.get('HOST', '0.0.0.0')
     debug = os.environ.get('DEBUG', 'False').lower() == 'true'
     
     print(f"Starting Article Encryption API on {host}:{port}")
     print(f"Debug mode: {debug}")
     print(f"API endpoint: http://{host}:{port}/api/encrypt")
+    print(f"Test page: http://{host}:{port}/")
     
     app.run(host=host, port=port, debug=debug)
