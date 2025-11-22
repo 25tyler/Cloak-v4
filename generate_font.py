@@ -112,6 +112,32 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
         if hmtx and src_glyph in hmtx.metrics:
             # hmtx.metrics is a dict mapping glyph names to (advanceWidth, leftSideBearing) tuples
             metrics_snapshot[src_glyph] = copy.deepcopy(hmtx.metrics[src_glyph])
+    
+    # Pre-calculate fallback metrics once (for efficiency)
+    fallback_metrics = {}
+    if hmtx:
+        # Get actual space metrics if available
+        space_glyph = char_to_glyph.get(' ')
+        if space_glyph and space_glyph in hmtx.metrics:
+            fallback_metrics['space'] = copy.deepcopy(hmtx.metrics[space_glyph])
+        
+        # Calculate average letter metrics
+        letter_glyphs = [char_to_glyph.get(c) for c in UPPERCASE + LOWERCASE 
+                        if c in char_to_glyph and char_to_glyph[c] in hmtx.metrics]
+        if letter_glyphs:
+            letter_widths = [hmtx.metrics[g][0] for g in letter_glyphs]
+            letter_lsbs = [hmtx.metrics[g][1] for g in letter_glyphs]
+            fallback_metrics['letter'] = (
+                sum(letter_widths) // len(letter_widths),
+                sum(letter_lsbs) // len(letter_lsbs) if letter_lsbs else 0
+            )
+        
+        # Font defaults as last resort
+        units_per_em = font['head'].unitsPerEm if 'head' in font else 1000
+        if 'space' not in fallback_metrics:
+            fallback_metrics['space'] = (int(units_per_em * 0.2), 0)
+        if 'letter' not in fallback_metrics:
+            fallback_metrics['letter'] = (int(units_per_em * 0.5), 0)
 
     swaps_made = 0
     for dest_glyph, src_glyph, encrypted_char, original_char in mappings:
@@ -125,24 +151,36 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
                 # This ensures encrypted text has identical layout to original
                 if hmtx:
                     source_metrics = None
+                    used_fallback = False
                     
-                    # Try to get source metrics (prefer snapshot, then direct access)
+                    # Priority 1: Snapshot (fastest, most reliable - preserves original exactly)
                     if src_glyph in metrics_snapshot:
                         source_metrics = copy.deepcopy(metrics_snapshot[src_glyph])
+                    
+                    # Priority 2: Direct access (if not in snapshot)
                     elif src_glyph in hmtx.metrics:
                         source_metrics = copy.deepcopy(hmtx.metrics[src_glyph])
                     
-                    if source_metrics:
-                        # Use source metrics - this preserves original layout exactly
-                        # Works for all cases: space->letter, letter->letter, letter->space
-                        hmtx.metrics[dest_glyph] = source_metrics
-                    elif dest_glyph in hmtx.metrics:
-                        # Fallback: if source has no metrics, keep destination's original
-                        # This is better than leaving it without metrics
-                        pass
-                    else:
-                        # Both missing - this shouldn't happen in normal fonts
-                        print(f"  Warning: No metrics available for {src_glyph} -> {dest_glyph}")
+                    # Priority 3: Smart fallback based on character type
+                    if not source_metrics:
+                        used_fallback = True
+                        if original_char == ' ':
+                            # Use actual space metrics if available, otherwise fallback
+                            source_metrics = fallback_metrics.get('space', (500, 0))
+                        elif original_char.isalpha():
+                            # Use average letter metrics
+                            source_metrics = fallback_metrics.get('letter', (500, 0))
+                        else:
+                            # For other characters, use letter metrics as default
+                            source_metrics = fallback_metrics.get('letter', (500, 0))
+                    
+                    # Always set metrics (never leave glyph without)
+                    hmtx.metrics[dest_glyph] = source_metrics
+                    
+                    # Warn if we used fallback (helps debug layout issues)
+                    if used_fallback:
+                        print(f"  Warning: Used fallback metrics for {repr(original_char)} -> {repr(encrypted_char)} "
+                              f"(source glyph {src_glyph} had no metrics)")
                 swaps_made += 1
                 enc_disp = repr(encrypted_char) if encrypted_char in [' ', '\x00', '\n'] else f"'{encrypted_char}'"
                 orig_disp = repr(original_char) if original_char in [' ', '\x00', '\n'] else f"'{original_char}'"
