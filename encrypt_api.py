@@ -58,7 +58,10 @@ def remap_text_ultra_fast(text: str, secret_key: int, nonce: int, precomputed_ma
     """
     Apply dynamic character remapping using Feistel cipher.
     Maps each character using the secret key and nonce.
-    Now handles space as position 26 (0-26 range).
+    
+    NOTE: Spaces are NOT encrypted - they pass through unchanged.
+    Only letters are encrypted. This prevents width mismatches.
+    
     precomputed_maps may be supplied to avoid recomputing (upper_map, lower_map, space_map).
     If return_maps is True, the tuple of maps is returned alongside the encrypted text.
     """
@@ -67,13 +70,17 @@ def remap_text_ultra_fast(text: str, secret_key: int, nonce: int, precomputed_ma
     else:
         upper_map, lower_map, space_map = get_dynamic_mappings(secret_key, nonce)
     
-    # Combine all mappings
-    combined_map = {**space_map, **upper_map, **lower_map}
+    # Combine all mappings (EXCLUDE space_map - spaces pass through unchanged)
+    # This prevents letters from becoming spaces, which causes width mismatches
+    combined_map = {**upper_map, **lower_map}
     
     # Apply mapping character by character
     result = []
     for char in text:
-        if char in combined_map:
+        if char == ' ':
+            # Spaces pass through unchanged (not encrypted)
+            result.append(' ')
+        elif char in combined_map:
             result.append(combined_map[char])
         else:
             # Keep unmapped characters as-is
@@ -118,7 +125,9 @@ def decrypt_article_text(encrypted_text: str, secret_key: int, nonce: int = None
     """
     Decrypt article text using Feistel cipher dec() function directly.
     Does not rely on stored mappings - uses dec() from Fiesty.py.
-    Now handles space as position 26 (0-26 range).
+    
+    NOTE: Spaces are NOT encrypted - they pass through unchanged.
+    Only letters are encrypted/decrypted.
     
     Args:
         encrypted_text: The encrypted text to decrypt
@@ -134,61 +143,39 @@ def decrypt_article_text(encrypted_text: str, secret_key: int, nonce: int = None
         # Try to calculate nonce from encrypted text (may not be perfect)
         nonce = nonce_creator(encrypted_text)
     
-    # Step 2: Calculate what space encrypts to (for ambiguity resolution)
-    # Space is at position 26
-    space_encrypted_pos = enc(secret_key, nonce, 26)
-    if space_encrypted_pos < 26:
-        space_encrypted_char = LOWERCASE[space_encrypted_pos]
-    else:
-        space_encrypted_char = ' '  # Space encrypts to itself
-    
-    # Step 3: Pre-calculate which positions encrypt to 26 (space)
-    # This helps us decrypt spaces correctly
-    positions_that_encrypt_to_26 = []
-    for pos in range(27):  # Check 0-26
-        if enc(secret_key, nonce, pos) == 26:
-            positions_that_encrypt_to_26.append(pos)
-    
-    # Step 4: Decrypt each character using dec() function
+    # Step 2: Decrypt each character using dec() function
+    # NOTE: Position 26 is no longer used (letters wrap instead of mapping to space)
     result = []
     for char in encrypted_text:
-        # Handle space in encrypted text
-        # A space means position 26 in the encrypted alphabet
-        # We need to find which original position(s) encrypt to 26
+        # Spaces pass through unchanged (never encrypted)
         if char == ' ':
-            # Decrypt position 26 to see what it came from
-            decrypted_from_26 = dec(secret_key, nonce, 26)
-            # If position 26 decrypts to 26, then the space came from space
-            # Otherwise, it came from a letter at that position
-            if decrypted_from_26 == 26:
-                result.append(' ')
-            elif decrypted_from_26 < 26:
-                # It came from a lowercase letter
-                result.append(LOWERCASE[decrypted_from_26])
-            else:
-                result.append(' ')  # Fallback
+            result.append(' ')
         # Check if it's uppercase
         elif char in UPPERCASE:
             # Find position of encrypted character
             encrypted_pos = UPPERCASE.index(char)
             # Decrypt the position using dec()
             original_pos = dec(secret_key, nonce, encrypted_pos)
-            # Map back to original character (0-25 for letters, 26 for space)
+            # Map back to original character (0-25 for letters)
+            # If decrypted position is 26, it wrapped from 0, so use position 0
             if original_pos < 26:
                 result.append(UPPERCASE[original_pos])
             else:
-                result.append(' ')  # Position 26 is space
+                # Position 26 wraps to 0
+                result.append(UPPERCASE[0])
         # Check if it's lowercase
         elif char in LOWERCASE:
             # Find position of encrypted character
             encrypted_pos = LOWERCASE.index(char)
             # Decrypt the position using dec()
             original_pos = dec(secret_key, nonce, encrypted_pos)
-            # Map back to original character (0-25 for letters, 26 for space)
+            # Map back to original character (0-25 for letters)
+            # If decrypted position is 26, it wrapped from 0, so use position 0
             if original_pos < 26:
                 result.append(LOWERCASE[original_pos])
             else:
-                result.append(' ')  # Position 26 is space
+                # Position 26 wraps to 0
+                result.append(LOWERCASE[0])
         # Handle null character
         elif char == '\n':
             result.append('\x00')
@@ -414,25 +401,25 @@ def encrypt_article():
                 secret_key = int(secret_key)
             except (ValueError, TypeError):
                 return jsonify({'error': 'secret_key must be an integer'}), 400
-        
-        # Debug: Log the secret_key being used (only in debug mode)
-        if DEBUG_MODE:
-            print(f"DEBUG: Encrypting text='{article_text[:20]}...' with secret_key={secret_key} (type: {type(secret_key).__name__})")
-        
-        base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
-        encryption = encrypt_article_text(article_text, secret_key, generate_font=True, base_url=base_url)
-        
-        # Debug: Log the result (only in debug mode)
-        if DEBUG_MODE:
-            print(f"DEBUG: Encrypted result: '{encryption['encrypted']}'")
-        
-        return jsonify({
-            'encrypted': encryption['encrypted'],
-            'nonce': encryption['nonce'],  # Include nonce for decryption
-            'secret_key_used': secret_key if DEBUG_MODE else None,  # Only include in debug mode
-            'font_url': encryption['font_url'],
+            
+            # Debug: Log the secret_key being used (only in debug mode)
+            if DEBUG_MODE:
+                print(f"DEBUG: Encrypting text='{article_text[:20]}...' with secret_key={secret_key} (type: {type(secret_key).__name__})")
+            
+            base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
+            encryption = encrypt_article_text(article_text, secret_key, generate_font=True, base_url=base_url)
+            
+            # Debug: Log the result (only in debug mode)
+            if DEBUG_MODE:
+                print(f"DEBUG: Encrypted result: '{encryption['encrypted']}'")
+            
+            return jsonify({
+                'encrypted': encryption['encrypted'],
+                'nonce': encryption['nonce'],  # Include nonce for decryption
+                'secret_key_used': secret_key if DEBUG_MODE else None,  # Only include in debug mode
+                'font_url': encryption['font_url'],
             'font_filename': encryption['font_filename']  # Include filename for reference
-        })
+            })
     
     except Exception as e:
         import traceback
@@ -574,13 +561,15 @@ def encrypt_page():
         
         # Get mappings once for the entire page
         upper_map, lower_map, space_map = get_dynamic_mappings(secret_key, nonce)
-        combined_map = {**space_map, **upper_map, **lower_map}
+        # EXCLUDE space_map - spaces pass through unchanged
+        combined_map = {**upper_map, **lower_map}
         
         # Encrypt all texts using the same mapping
         encrypted_texts = []
         for text in valid_texts:
             expanded_text = expand_ligatures(text)
-            encrypted = ''.join(combined_map.get(char, char) for char in expanded_text)
+            # Spaces pass through unchanged, other chars get mapped
+            encrypted = ''.join(' ' if char == ' ' else combined_map.get(char, char) for char in expanded_text)
             encrypted_texts.append(encrypted)
         
         # Generate font for this encryption
@@ -677,8 +666,10 @@ def encrypt_articles_batch():
                 upper_map, lower_map, space_map = mappings_cache[nonce]
             
             # Use mappings to encrypt the text
-            combined_map = {**space_map, **upper_map, **lower_map}
-            encrypted = ''.join(combined_map.get(char, char) for char in expanded)
+            # EXCLUDE space_map - spaces pass through unchanged
+            combined_map = {**upper_map, **lower_map}
+            # Spaces pass through unchanged, other chars get mapped
+            encrypted = ''.join(' ' if char == ' ' else combined_map.get(char, char) for char in expanded)
             encrypted_texts.append(encrypted)
             
             # Generate font for this nonce if we haven't already
@@ -710,10 +701,10 @@ def root():
     """Root endpoint - serve test page"""
     return send_from_directory(os.path.dirname(__file__), 'test_page_encryption.html')
 
-@app.route('/test-clipping', methods=['GET'])
-def test_clipping():
-    """Test page for font clipping issue"""
-    return send_from_directory(os.path.dirname(__file__), 'test_font_clipping.html')
+@app.route('/test-localhost', methods=['GET'])
+def test_localhost():
+    """Test page for localhost - regular website example"""
+    return send_from_directory(os.path.dirname(__file__), 'test_localhost.html')
 
 @app.route('/client/encrypt-page.js', methods=['GET'])
 def serve_encrypt_page_script():

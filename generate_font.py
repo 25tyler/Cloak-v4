@@ -29,6 +29,9 @@ def generate_char_mapping(sk: int, nonce: int, char_set: str) -> dict:
     Maps each character in char_set to its encrypted version.
     Shared by the API and font generator to keep a single source of truth.
     
+    CRITICAL: Ensures bijective (one-to-one) mapping to prevent collisions.
+    When position 26 wraps, it uses the first available unused character.
+    
     Args:
         sk: Secret key
         nonce: Nonce value
@@ -38,38 +41,51 @@ def generate_char_mapping(sk: int, nonce: int, char_set: str) -> dict:
         Dictionary mapping original char -> encrypted char
     """
     mapping = {}
+    used_chars = set()  # Track which characters are already mapped to
+    
+    # First pass: map all positions that encrypt to < 26
     for i, char in enumerate(char_set):
-        # Encrypt the position [0..25] using Feistel cipher (now supports 0-26)
         encrypted_pos = enc(sk, nonce, i)
-        # Map to the character at that position
-        # If encrypted_pos is 26, map to space; otherwise map to char_set[encrypted_pos]
         if encrypted_pos < len(char_set):
-            mapping[char] = char_set[encrypted_pos]
-        else:
-            # Position 26 maps to space
-            mapping[char] = ' '
+            target_char = char_set[encrypted_pos]
+            mapping[char] = target_char
+            used_chars.add(target_char)
+    
+    # Second pass: handle positions that encrypt to 26 (wrap to unused character)
+    for i, char in enumerate(char_set):
+        encrypted_pos = enc(sk, nonce, i)
+        if encrypted_pos >= len(char_set):  # Position 26
+            # Find first unused character to avoid collision
+            for j in range(len(char_set)):
+                candidate = char_set[j]
+                if candidate not in used_chars:
+                    mapping[char] = candidate
+                    used_chars.add(candidate)
+                    break
+            else:
+                # Should never happen (26 positions, 26 characters)
+                # But fallback: use modulo
+                mapping[char] = char_set[encrypted_pos % len(char_set)]
+    
     return mapping
 
 def get_dynamic_mappings(sk: int, nonce: int) -> tuple:
     """
     Get all dynamic mappings (uppercase, lowercase, space) for given sk and nonce.
     Returns (upper_map, lower_map, space_map)
+    
+    NOTE: Spaces are NOT encrypted - they pass through unchanged.
+    space_map is kept for backward compatibility but will be empty.
     """
     upper_map = generate_char_mapping(sk, nonce, UPPERCASE)
     lower_map = generate_char_mapping(sk, nonce, LOWERCASE)
     
-    # Space is now a regular character - create mapping for it
-    # Space is at position 26, encrypt it using Feistel
-    space_encrypted_pos = enc(sk, nonce, 26)
-    # Map to character at that position (0-25 maps to letters, 26 maps to space)
-    if space_encrypted_pos < 26:
-        # Map to lowercase letter (we'll use lowercase for space mapping)
-        space_map = {" ": LOWERCASE[space_encrypted_pos]}
-    else:
-        # If it encrypts to 26, it stays as space
-        space_map = {" ": " "}
+    # Spaces are NOT encrypted - they pass through unchanged
+    # This prevents letters from becoming spaces (which causes width mismatches)
+    # space_map is kept empty for backward compatibility
+    space_map = {}
     
-    # Other special characters (null -> newline)
+    # Other special characters (null -> newline) - kept for font display purposes
     special_map = {"\x00": "\n"}
     space_map.update(special_map)
     
@@ -104,14 +120,18 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
                 print(f"  Skipped: {repr(encrypted_char)} -> {repr(original_char)} (missing: {', '.join(missing)})")
 
     # Snapshot source glyphs and metrics so cycles can't clobber later copies
+    # Also store original character widths for verification
     glyph_snapshot = {}
     metrics_snapshot = {}
-    for _, src_glyph, _, _ in mappings:
+    original_widths = {}  # Store original char -> width mapping for verification
+    for _, src_glyph, _, original_char in mappings:
         if src_glyph in glyf_table:
             glyph_snapshot[src_glyph] = copy.deepcopy(glyf_table[src_glyph])
         if hmtx and src_glyph in hmtx.metrics:
             # hmtx.metrics is a dict mapping glyph names to (advanceWidth, leftSideBearing) tuples
             metrics_snapshot[src_glyph] = copy.deepcopy(hmtx.metrics[src_glyph])
+            # Store original width for this character (for verification)
+            original_widths[original_char] = hmtx.metrics[src_glyph][0]  # advanceWidth
     
     # Pre-calculate fallback metrics once (for efficiency)
     fallback_metrics = {}
@@ -153,15 +173,12 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
                     source_metrics = None
                     used_fallback = False
                     
-                    # Priority 1: Snapshot (fastest, most reliable - preserves original exactly)
+                    # CRITICAL: Always use snapshot - never read from hmtx.metrics after modifications
+                    # The snapshot was taken BEFORE any modifications, so it's the source of truth
                     if src_glyph in metrics_snapshot:
                         source_metrics = copy.deepcopy(metrics_snapshot[src_glyph])
                     
-                    # Priority 2: Direct access (if not in snapshot)
-                    elif src_glyph in hmtx.metrics:
-                        source_metrics = copy.deepcopy(hmtx.metrics[src_glyph])
-                    
-                    # Priority 3: Smart fallback based on character type
+                    # Fallback only if source glyph wasn't in snapshot (shouldn't happen, but safety)
                     if not source_metrics:
                         used_fallback = True
                         if original_char == ' ':
@@ -175,7 +192,16 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
                             source_metrics = fallback_metrics.get('letter', (500, 0))
                     
                     # Always set metrics (never leave glyph without)
+                    # This overwrites any existing metrics on dest_glyph with source metrics
                     hmtx.metrics[dest_glyph] = source_metrics
+                    
+                    # Verify exact width preservation (for zero visual change)
+                    if not used_fallback and original_char in original_widths:
+                        expected_width = original_widths[original_char]
+                        actual_width = source_metrics[0]
+                        if expected_width != actual_width:
+                            print(f"  ⚠️  Width mismatch: {repr(original_char)} expected {expected_width}, got {actual_width}")
+                        # else: Width preserved exactly (silent success)
                     
                     # Warn if we used fallback (helps debug layout issues)
                     if used_fallback:

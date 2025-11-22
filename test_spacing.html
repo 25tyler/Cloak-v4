@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spacing Test - Encryption</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Georgia', serif;
+            line-height: 1.8;
+            color: #2c3e50;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .test-section {
+            margin-bottom: 40px;
+            padding: 25px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .test-section h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+        
+        .test-section p {
+            margin-bottom: 15px;
+            font-size: 1.1em;
+            line-height: 1.8;
+        }
+        
+        .status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 25px;
+            background: #28a745;
+            color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            font-weight: bold;
+            opacity: 0;
+            transform: translateY(-20px);
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }
+        
+        .status.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        .status.error {
+            background: #dc3545;
+        }
+        
+        .status.info {
+            background: #17a2b8;
+        }
+        
+        .key-display {
+            background: #e9ecef;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 1.2em;
+            text-align: center;
+            color: #495057;
+        }
+        
+        .spacing-test {
+            background: white;
+            padding: 20px;
+            border-radius: 6px;
+            margin-top: 15px;
+            border: 2px dashed #dee2e6;
+        }
+        
+        .spacing-test strong {
+            color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="status" id="status">Loading...</div>
+    
+    <div class="container">
+        <div class="header">
+            <h1>🔐 Spacing Consistency Test</h1>
+            <p>Testing encrypted text with consistent spacing</p>
+        </div>
+        
+        <div class="content">
+            <div class="test-section">
+                <h2>Test 1: Normal Paragraph</h2>
+                <p>This is a normal paragraph with regular spacing between words. The quick brown fox jumps over the lazy dog. Each word should have consistent spacing, and the text should flow naturally without any large gaps or cramped spacing between words.</p>
+            </div>
+            
+            <div class="test-section">
+                <h2>Test 2: Long Words and Spaces</h2>
+                <p>Development implementation architecture infrastructure documentation configuration. These long words should maintain proper spacing. The spaces between words should be uniform and consistent throughout the entire paragraph.</p>
+            </div>
+            
+            <div class="test-section">
+                <h2>Test 3: Mixed Content</h2>
+                <p>Here is some text with various word lengths: I, a, the, quick, development, implementation, supercalifragilisticexpialidocious. All spaces should be the same width regardless of the words around them.</p>
+            </div>
+            
+            <div class="test-section">
+                <h2>Test 4: Technical Terms</h2>
+                <p>API endpoint encryption decryption font generation metrics preservation. Technical terminology should not affect spacing. Each space character should have identical width.</p>
+            </div>
+            
+            <div class="test-section">
+                <h2>Test 5: Repetitive Text</h2>
+                <p>Word word word word word word word word word word. This repetitive text helps identify spacing inconsistencies. If spacing is correct, all gaps should look identical.</p>
+            </div>
+            
+            <div class="test-section">
+                <h2>Spacing Verification</h2>
+                <div class="spacing-test">
+                    <p><strong>Instructions:</strong> Check that all spaces between words are uniform. There should be no:</p>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li>Large gaps (big spaces)</li>
+                        <li>Small gaps (cramped spaces)</li>
+                        <li>Inconsistent spacing between different words</li>
+                    </ul>
+                    <p style="margin-top: 15px;"><strong>Expected:</strong> All spaces should be identical in width, matching the original font's space character width.</p>
+                </div>
+            </div>
+            
+            <div class="key-display">
+                <div>Secret Key: <span id="secretKeyValue">Generating...</span></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Generate a random secret key (8-digit number, between 10000000 and 99999999)
+        const randomSecretKey = Math.floor(10000000 + Math.random() * 90000000);
+        
+        // Display the generated key immediately
+        document.addEventListener('DOMContentLoaded', function() {
+            const keyDisplay = document.getElementById('secretKeyValue');
+            if (keyDisplay) {
+                keyDisplay.textContent = randomSecretKey;
+            }
+            
+            // Show status
+            const status = document.getElementById('status');
+            status.textContent = `🔑 Generated Secret Key: ${randomSecretKey}`;
+            status.className = 'status show info';
+            setTimeout(function() {
+                status.className = 'status';
+            }, 3000);
+        });
+        
+        // Create script element with the random secret key
+        const encryptScript = document.createElement('script');
+        encryptScript.src = 'http://localhost:5001/client/encrypt-page.js';
+        encryptScript.setAttribute('data-secret-key', randomSecretKey);
+        
+        // Load the encryption script
+        document.head.appendChild(encryptScript);
+    </script>
+</body>
+</html>
+

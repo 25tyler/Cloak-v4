@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Encryption Test - Localhost</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Georgia', serif;
+            line-height: 1.8;
+            color: #2c3e50;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+        
+        header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .secret-key-display {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 10px 20px;
+            border-radius: 6px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            display: inline-block;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .article {
+            margin-bottom: 40px;
+            padding-bottom: 30px;
+            border-bottom: 2px solid #ecf0f1;
+        }
+        
+        .article:last-child {
+            border-bottom: none;
+        }
+        
+        .article h2 {
+            color: #667eea;
+            font-size: 1.8em;
+            margin-bottom: 15px;
+            font-weight: 400;
+        }
+        
+        .article p {
+            font-size: 1.1em;
+            margin-bottom: 15px;
+            text-align: justify;
+        }
+        
+        .article p:last-child {
+            margin-bottom: 0;
+        }
+        
+        .sidebar {
+            background: #f8f9fa;
+            padding: 30px;
+            border-radius: 8px;
+            margin-top: 30px;
+        }
+        
+        .sidebar h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+        
+        .sidebar ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        
+        .sidebar li {
+            padding: 8px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .sidebar li:last-child {
+            border-bottom: none;
+        }
+        
+        footer {
+            background: #2c3e50;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            font-size: 0.9em;
+        }
+        
+        .status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            font-size: 0.9em;
+            z-index: 1000;
+            display: none;
+        }
+        
+        .status.show {
+            display: block;
+        }
+        
+        .status.success {
+            background: rgba(76, 175, 80, 0.9);
+        }
+        
+        .status.error {
+            background: rgba(244, 67, 54, 0.9);
+        }
+    </style>
+</head>
+<body>
+    <div class="status" id="status"></div>
+    
+    <div class="container">
+        <header>
+            <h1>News Website Example</h1>
+            <p>This page demonstrates automatic text encryption</p>
+            <div class="secret-key-display" id="secretKeyDisplay">
+                🔑 Secret Key: <span id="secretKeyValue">Generating...</span>
+            </div>
+        </header>
+        
+        <div class="content">
+            <article class="article">
+                <h2>Breaking News: Technology Advances</h2>
+                <p>In a groundbreaking development, researchers have announced a new breakthrough in artificial intelligence technology. This advancement promises to revolutionize how we interact with computers and digital systems.</p>
+                <p>The new system demonstrates remarkable capabilities in understanding natural language and processing complex information. Experts believe this could transform industries ranging from healthcare to education.</p>
+                <p>Several major technology companies have already expressed interest in licensing this technology. The implications for the future of computing are profound and far-reaching.</p>
+            </article>
+            
+            <article class="article">
+                <h2>Science Update: Climate Research</h2>
+                <p>Climate scientists have released new data showing significant changes in global weather patterns. The research, conducted over the past decade, reveals important trends that could impact agriculture and water resources worldwide.</p>
+                <p>These findings come at a critical time when policymakers are making decisions about environmental regulations. The data provides crucial evidence for understanding long-term climate trends.</p>
+            </article>
+            
+            <article class="article">
+                <h2>Business News: Market Analysis</h2>
+                <p>The stock market showed mixed results today as investors reacted to the latest economic indicators. Technology stocks performed particularly well, while energy sector shares experienced some volatility.</p>
+                <p>Financial analysts suggest that the current market conditions reflect broader economic trends. Investors are advised to maintain a diversified portfolio and consider long-term investment strategies.</p>
+            </article>
+            
+            <div class="sidebar">
+                <h3>Related Articles</h3>
+                <ul>
+                    <li>Understanding Modern Encryption</li>
+                    <li>Web Security Best Practices</li>
+                    <li>Privacy in the Digital Age</li>
+                    <li>Technology Trends for 2024</li>
+                </ul>
+            </div>
+        </div>
+        
+        <footer>
+            <p>&copy; 2024 News Website. All rights reserved.</p>
+        </footer>
+    </div>
+    
+    <!-- Encryption script - automatically encrypts all text on the page -->
+    <!-- Generate random secret key on each page load -->
+    <script>
+        // Generate a random secret key (8-digit number, between 10000000 and 99999999)
+        const randomSecretKey = Math.floor(10000000 + Math.random() * 90000000);
+        
+        // Display the generated key immediately
+        document.addEventListener('DOMContentLoaded', function() {
+            const keyDisplay = document.getElementById('secretKeyValue');
+            if (keyDisplay) {
+                keyDisplay.textContent = randomSecretKey;
+            }
+            
+            // Also show in status
+            const status = document.getElementById('status');
+            status.textContent = `🔑 Generated Secret Key: ${randomSecretKey}`;
+            status.className = 'status show success';
+            setTimeout(function() {
+                status.className = 'status';
+            }, 3000);
+        });
+        
+        // Create script element with the random secret key
+        const encryptScript = document.createElement('script');
+        encryptScript.src = 'http://localhost:5001/client/encrypt-page.js';
+        encryptScript.setAttribute('data-secret-key', randomSecretKey);
+        
+        // Load the encryption script
+        document.head.appendChild(encryptScript);
+    </script>
+    
+    <script>
+        // Show status when encryption completes
+        window.addEventListener('load', function() {
+            setTimeout(function() {
+                const status = document.getElementById('status');
+                // Get the secret key from the script tag
+                const scriptTag = document.querySelector('script[data-secret-key]');
+                const secretKey = scriptTag ? scriptTag.getAttribute('data-secret-key') : 'unknown';
+                status.textContent = `✅ Text encryption complete! (Key: ${secretKey})`;
+                status.className = 'status show success';
+                setTimeout(function() {
+                    status.className = 'status';
+                }, 5000);
+            }, 2000);
+        });
+    </script>
+</body>
+</html>
+
