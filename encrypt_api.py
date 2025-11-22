@@ -39,6 +39,9 @@ CORS(app)  # Allow cross-origin requests from news websites
 # Debug mode - set via environment variable
 DEBUG_MODE = os.environ.get('DEBUG', 'false').lower() == 'true'
 
+# Default secret key - can be overridden per request
+DEFAULT_SECRET_KEY = int(os.environ.get('DEFAULT_SECRET_KEY', '29202393'))
+
 # ============================================================================
 # DYNAMIC ENCRYPTION USING FEISTEL CIPHER
 # ============================================================================
@@ -402,14 +405,15 @@ def encrypt_article():
         if not article_text:
             return jsonify({'error': 'No text provided'}), 400
         
+        # Use default secret key if not provided
         if secret_key is None:
-            return jsonify({'error': 'No secret_key provided'}), 400
-        
-        # Convert secret_key to int if it's a string
-        try:
-            secret_key = int(secret_key)
-        except (ValueError, TypeError):
-            return jsonify({'error': 'secret_key must be an integer'}), 400
+            secret_key = DEFAULT_SECRET_KEY
+        else:
+            # Convert secret_key to int if it's a string
+            try:
+                secret_key = int(secret_key)
+            except (ValueError, TypeError):
+                return jsonify({'error': 'secret_key must be an integer'}), 400
         
         # Debug: Log the secret_key being used (only in debug mode)
         if DEBUG_MODE:
@@ -467,14 +471,15 @@ def decrypt_article():
         if not encrypted_text:
             return jsonify({'error': 'No encrypted text provided'}), 400
         
+        # Use default secret key if not provided
         if secret_key is None:
-            return jsonify({'error': 'No secret_key provided'}), 400
-        
-        # Convert secret_key to int if it's a string
-        try:
-            secret_key = int(secret_key)
-        except (ValueError, TypeError):
-            return jsonify({'error': 'secret_key must be an integer'}), 400
+            secret_key = DEFAULT_SECRET_KEY
+        else:
+            # Convert secret_key to int if it's a string
+            try:
+                secret_key = int(secret_key)
+            except (ValueError, TypeError):
+                return jsonify({'error': 'secret_key must be an integer'}), 400
         
         # Convert nonce to int if provided
         if nonce is not None:
@@ -631,14 +636,15 @@ def encrypt_articles_batch():
         if not texts or not isinstance(texts, list):
             return jsonify({'error': 'No texts array provided'}), 400
         
+        # Use default secret key if not provided
         if secret_key is None:
-            return jsonify({'error': 'No secret_key provided'}), 400
-        
-        # Convert secret_key to int if it's a string
-        try:
-            secret_key = int(secret_key)
-        except (ValueError, TypeError):
-            return jsonify({'error': 'secret_key must be an integer'}), 400
+            secret_key = DEFAULT_SECRET_KEY
+        else:
+            # Convert secret_key to int if it's a string
+            try:
+                secret_key = int(secret_key)
+            except (ValueError, TypeError):
+                return jsonify({'error': 'secret_key must be an integer'}), 400
         
         if len(texts) > 100:  # Limit batch size
             return jsonify({'error': 'Batch size too large (max 100)'}), 400
@@ -745,11 +751,15 @@ def test_encryption():
         test_text = data.get('text')
         secret_key = data.get('secret_key')
         
-        # Convert secret_key to int if it's a string
-        try:
-            secret_key = int(secret_key)
-        except (ValueError, TypeError):
-            return jsonify({'error': 'secret_key must be an integer'}), 400
+        # Use default secret key if not provided
+        if secret_key is None:
+            secret_key = DEFAULT_SECRET_KEY
+        else:
+            # Convert secret_key to int if it's a string
+            try:
+                secret_key = int(secret_key)
+            except (ValueError, TypeError):
+                return jsonify({'error': 'secret_key must be an integer'}), 400
         
         # Debug: Log the secret_key being used (only in debug mode)
         if DEBUG_MODE:

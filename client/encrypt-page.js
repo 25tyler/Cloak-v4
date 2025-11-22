@@ -16,7 +16,8 @@
     // ============================================================================
     const CONFIG = {
         // Default secret key (can be overridden via data-secret-key attribute)
-        secretKey: 29202393,
+        // If not specified, API will use server default
+        secretKey: null,
         
         // Font name for encrypted content
         fontName: 'EncryptedFont',
@@ -183,15 +184,18 @@
             const texts = textNodes.map(tn => tn.text);
             
             // Call API once with all text
+            // Only include secret_key if explicitly set (otherwise API uses server default)
+            const requestBody = { texts: texts };
+            if (CONFIG.secretKey !== null) {
+                requestBody.secret_key = CONFIG.secretKey;
+            }
+            
             const response = await fetch(CONFIG.apiEndpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    texts: texts,
-                    secret_key: CONFIG.secretKey
-                })
+                body: JSON.stringify(requestBody)
             });
             
             if (!response.ok) {
