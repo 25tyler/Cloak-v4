@@ -710,6 +710,11 @@ def root():
     """Root endpoint - serve test page"""
     return send_from_directory(os.path.dirname(__file__), 'test_page_encryption.html')
 
+@app.route('/test-clipping', methods=['GET'])
+def test_clipping():
+    """Test page for font clipping issue"""
+    return send_from_directory(os.path.dirname(__file__), 'test_font_clipping.html')
+
 @app.route('/client/encrypt-page.js', methods=['GET'])
 def serve_encrypt_page_script():
     """Serve the automatic page encryption client script"""
