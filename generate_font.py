@@ -121,12 +121,17 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
                 glyf_table[dest_glyph] = copy.deepcopy(glyph_snapshot[src_glyph])
                 # Copy the horizontal metrics (advance width and left side bearing)
                 # This ensures proper spacing and prevents clipping at line breaks
-                # CRITICAL FIX: Always copy metrics if source has them, regardless of dest state
+                # CRITICAL FIX: Always ensure destination has proper metrics
                 # This prevents random text breaking due to inconsistent metrics
-                if hmtx and src_glyph in metrics_snapshot:
-                    # Copy metrics - this will add or update the destination glyph's metrics
-                    # Don't check if dest_glyph already has metrics - always copy to ensure consistency
-                    hmtx.metrics[dest_glyph] = copy.deepcopy(metrics_snapshot[src_glyph])
+                if hmtx:
+                    if src_glyph in metrics_snapshot:
+                        # Source has metrics in snapshot - copy them (preferred method)
+                        hmtx.metrics[dest_glyph] = copy.deepcopy(metrics_snapshot[src_glyph])
+                    elif src_glyph in hmtx.metrics:
+                        # Source has metrics but wasn't in snapshot - copy directly
+                        hmtx.metrics[dest_glyph] = copy.deepcopy(hmtx.metrics[src_glyph])
+                    # If source has no metrics, destination keeps its original metrics (if any)
+                    # This ensures we never leave a glyph without metrics
                 swaps_made += 1
                 enc_disp = repr(encrypted_char) if encrypted_char in [' ', '\x00', '\n'] else f"'{encrypted_char}'"
                 orig_disp = repr(original_char) if original_char in [' ', '\x00', '\n'] else f"'{original_char}'"
