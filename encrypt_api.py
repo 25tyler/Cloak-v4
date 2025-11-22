@@ -4,7 +4,7 @@
 Backend API Server for Article Encryption
 Uses the EXACT algorithm from EncTestNewTestF.py
 """
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, has_request_context
 from flask_cors import CORS
 # Caching removed - no longer using lru_cache
 from collections import Counter
@@ -313,8 +313,21 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
                 if DEBUG_MODE:
                     print(f"✅ Font uploaded to R2: {r2_url}")
                 # Use proxy URL to avoid CORS issues
-                resolved_base = base_url or os.environ.get('BASE_URL', 'http://localhost:5000')
-                proxy_url = f"{resolved_base.rstrip('/')}/proxy-font/{font_filename}"
+                # Try base_url, then BASE_URL env var, then request.url_root (if in request context)
+                if base_url:
+                    resolved_base = base_url
+                elif os.environ.get('BASE_URL'):
+                    resolved_base = os.environ.get('BASE_URL')
+                elif has_request_context():
+                    resolved_base = request.url_root.rstrip('/')
+                else:
+                    resolved_base = None
+                
+                if resolved_base:
+                    proxy_url = f"{resolved_base.rstrip('/')}/proxy-font/{font_filename}"
+                else:
+                    # Fallback: use R2 URL directly (may have CORS issues)
+                    proxy_url = r2_url
                 if DEBUG_MODE:
                     print(f"✅ Using proxy font URL (avoids CORS): {proxy_url}")
                 return font_filename, proxy_url
@@ -336,7 +349,16 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
         return font_filename, fallback_url
 
     # Return local URL if R2 upload not used
-    resolved_base = base_url or os.environ.get('BASE_URL')
+    # Try base_url, then BASE_URL env var, then request.url_root (if in request context)
+    if base_url:
+        resolved_base = base_url
+    elif os.environ.get('BASE_URL'):
+        resolved_base = os.environ.get('BASE_URL')
+    elif has_request_context():
+        resolved_base = request.url_root.rstrip('/')
+    else:
+        resolved_base = None
+    
     if resolved_base:
         font_url = f"{resolved_base.rstrip('/')}/fonts/{font_filename}"
     else:

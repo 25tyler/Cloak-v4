@@ -47,3 +47,7 @@ Thumbs.db
 # Logs
 *.log
 
+# Generated fonts (created at runtime)
+fonts/*.woff2
+fonts/*.ttf
+
