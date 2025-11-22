@@ -221,10 +221,16 @@
                     // Replace text content
                     textNode.node.textContent = encryptedText;
                     
-                    // Apply font to parent element
+                    // Apply font and rendering properties to parent element
                     const parent = textNode.node.parentElement;
                     if (parent) {
                         parent.style.fontFamily = `${CONFIG.fontName}, sans-serif`;
+                        parent.style.textRendering = 'optimizeLegibility';
+                        parent.style.overflowWrap = 'break-word';
+                        parent.style.wordWrap = 'break-word';
+                        // Prevent text clipping at line breaks
+                        parent.style.overflow = 'visible';
+                        parent.style.textOverflow = 'clip';
                     }
                 }
             });

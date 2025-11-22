@@ -110,13 +110,17 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
         if src_glyph in glyf_table:
             glyph_snapshot[src_glyph] = copy.deepcopy(glyf_table[src_glyph])
         if hmtx and src_glyph in hmtx.metrics:
+            # hmtx.metrics is a dict mapping glyph names to (advanceWidth, leftSideBearing) tuples
             metrics_snapshot[src_glyph] = copy.deepcopy(hmtx.metrics[src_glyph])
 
     swaps_made = 0
     for dest_glyph, src_glyph, encrypted_char, original_char in mappings:
         try:
             if src_glyph in glyph_snapshot and dest_glyph in glyf_table:
+                # Copy the glyph outline
                 glyf_table[dest_glyph] = copy.deepcopy(glyph_snapshot[src_glyph])
+                # Copy the horizontal metrics (advance width and left side bearing)
+                # This ensures proper spacing and prevents clipping at line breaks
                 if hmtx and src_glyph in metrics_snapshot and dest_glyph in hmtx.metrics:
                     hmtx.metrics[dest_glyph] = copy.deepcopy(metrics_snapshot[src_glyph])
                 swaps_made += 1
