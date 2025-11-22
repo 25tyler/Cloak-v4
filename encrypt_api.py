@@ -538,14 +538,15 @@ def encrypt_page():
         if not texts or not isinstance(texts, list):
             return jsonify({'error': 'No texts array provided'}), 400
         
+        # Use default secret key if not provided
         if secret_key is None:
-            return jsonify({'error': 'No secret_key provided'}), 400
-        
-        # Convert secret_key to int if it's a string
-        try:
-            secret_key = int(secret_key)
-        except (ValueError, TypeError):
-            return jsonify({'error': 'secret_key must be an integer'}), 400
+            secret_key = DEFAULT_SECRET_KEY
+        else:
+            # Convert secret_key to int if it's a string
+            try:
+                secret_key = int(secret_key)
+            except (ValueError, TypeError):
+                return jsonify({'error': 'secret_key must be an integer'}), 400
         
         if len(texts) > 1000:  # Limit batch size for entire pages
             return jsonify({'error': 'Too many text nodes (max 1000)'}), 400
