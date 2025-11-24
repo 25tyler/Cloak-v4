@@ -14,6 +14,7 @@ CORS(app)
 # Configuration
 API_URL = os.environ.get('API_URL', 'http://localhost:5001')
 NYT_HTML_PATH = os.path.join(os.path.dirname(__file__), 'nyt.html')
+SECRET_KEY = int(os.environ.get('SECRET_KEY', '29202393'))  # Default secret key
 
 # Cache the encrypted HTML
 _cached_encrypted_html = None
@@ -37,7 +38,7 @@ def get_encrypted_html():
     try:
         response = requests.post(
             f'{API_URL}/nyt-encrypt',
-            json={'html': html_content},
+            json={'html': html_content, 'secret_key': SECRET_KEY},
             timeout=30
         )
         response.raise_for_status()
@@ -77,5 +78,6 @@ if __name__ == '__main__':
     print(f'Starting server on http://localhost:8001')
     print(f'API URL: {API_URL}')
     print(f'NYT HTML path: {NYT_HTML_PATH}')
+    print(f'Secret key: {SECRET_KEY}')
     app.run(host='0.0.0.0', port=8001, debug=True)
 

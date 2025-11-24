@@ -1512,14 +1512,25 @@ def nyt_encrypt():
         if not BS4_AVAILABLE:
             return jsonify({'error': 'beautifulsoup4 is required for HTML encryption. Install with: pip install beautifulsoup4'}), 500
         
-        # Get HTML content from request
+        # Get HTML content and secret key from request
         html_content = None
+        secret_key = None
         
         if request.method == 'POST':
             # Try to get from JSON body
             data = request.json
-            if data and 'html' in data:
+            if data:
                 html_content = data.get('html', '')
+                # Get secret_key from JSON body if provided
+                if 'secret_key' in data:
+                    secret_key = data.get('secret_key')
+                    if isinstance(secret_key, str):
+                        try:
+                            secret_key = int(secret_key)
+                        except ValueError:
+                            return jsonify({'error': 'secret_key must be an integer'}), 400
+                    elif not isinstance(secret_key, int):
+                        return jsonify({'error': 'secret_key must be an integer'}), 400
         else:
             # GET request - try query parameter
             html_content = request.args.get('html', '')
@@ -1533,8 +1544,9 @@ def nyt_encrypt():
             with open(nyt_file, 'r', encoding='utf-8') as f:
                 html_content = f.read()
         
-        # Get secret key (use default or from query param)
-        secret_key = request.args.get('secret_key', type=int)
+        # Get secret key (from JSON body, query param, or default)
+        if secret_key is None:
+            secret_key = request.args.get('secret_key', type=int)
         if secret_key is None:
             secret_key = DEFAULT_SECRET_KEY
         
