@@ -623,11 +623,14 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
             container.append(leading_space_span)
         
         # Wrap encrypted text for proper word breaking (like client-side script)
-        # CRITICAL: Handle spaces that are actually encrypted periods
-        # When periods encrypt to space, those spaces need to be preserved and rendered
-        # Split by both space_char (what space encrypts to) AND actual space (what period encrypts to)
+        # CRITICAL: Handle spaces that are actually encrypted characters (like 't' or period)
+        # When any character encrypts to space, those spaces need to be preserved and rendered
+        # Split by both space_char (what space encrypts to) AND actual space (what other chars encrypt to)
         period_encrypted_to = combined_map.get('.', None)
         has_period_as_space = (period_encrypted_to == ' ')
+        # Check if any character encrypts to space (e.g., 't' encrypts to space)
+        chars_that_encrypt_to_space = [char for char, encrypted in combined_map.items() if encrypted == ' ']
+        has_chars_as_space = len(chars_that_encrypt_to_space) > 0
         
         if space_char and space_char in encrypted:
             # Split text by space_char (word boundaries from original spaces)
@@ -654,6 +657,25 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                                 period_span['style'] = 'display: inline-block; white-space: nowrap;'
                                 period_span.string = '\u00A0'  # Non-breaking space - will show as period via font mapping
                                 container.append(period_span)
+                    elif has_chars_as_space and ' ' in part:
+                        # This part contains spaces from characters that encrypt to space (e.g., 't')
+                        # Split by space and wrap each part, using non-breaking space for the spaces
+                        subparts = part.split(' ')
+                        for j, subpart in enumerate(subparts):
+                            if subpart:  # Non-empty subpart
+                                word_span = soup.new_tag('span')
+                                word_span['style'] = 'display: inline-block; white-space: nowrap; word-break: keep-all;'
+                                word_span.string = subpart
+                                container.append(word_span)
+                            
+                            # Add space (encrypted character like 't') between subparts (except after last subpart)
+                            # Use non-breaking space (U+00A0) to prevent HTML from collapsing it
+                            # The font maps non-breaking space to the original character glyph (e.g., 't')
+                            if j < len(subparts) - 1:
+                                char_span = soup.new_tag('span')
+                                char_span['style'] = 'display: inline-block; white-space: nowrap;'
+                                char_span.string = '\u00A0'  # Non-breaking space - will show as original char via font mapping
+                                container.append(char_span)
                     else:
                         # No spaces in this part, just wrap normally
                         word_span = soup.new_tag('span')
@@ -667,9 +689,9 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                     space_span['style'] = 'display: inline-block; white-space: nowrap;'
                     space_span.string = space_char
                     container.append(space_span)
-        elif has_period_as_space and ' ' in encrypted:
-            # No space_char in encrypted, but has spaces (encrypted periods)
-            # Split by space to separate encrypted periods
+        elif (has_period_as_space or has_chars_as_space) and ' ' in encrypted:
+            # No space_char in encrypted, but has spaces (encrypted periods or other chars like 't')
+            # Split by space to separate encrypted characters
             parts = encrypted.split(' ')
             for i, part in enumerate(parts):
                 if part:  # Non-empty part
@@ -678,14 +700,14 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                     word_span.string = part
                     container.append(word_span)
                 
-                # Add space (encrypted period) between parts (except after last part)
+                # Add space (encrypted character) between parts (except after last part)
                 # Use non-breaking space (U+00A0) to prevent HTML from collapsing it
-                # The font maps non-breaking space to period glyph
+                # The font maps non-breaking space to the original character glyph (e.g., 't' or period)
                 if i < len(parts) - 1:
-                    period_span = soup.new_tag('span')
-                    period_span['style'] = 'display: inline-block; white-space: nowrap;'
-                    period_span.string = '\u00A0'  # Non-breaking space - will show as period via font mapping
-                    container.append(period_span)
+                    char_span = soup.new_tag('span')
+                    char_span['style'] = 'display: inline-block; white-space: nowrap;'
+                    char_span.string = '\u00A0'  # Non-breaking space - will show as original char via font mapping
+                    container.append(char_span)
         else:
             # No spaces, just wrap the whole encrypted text
             word_span = soup.new_tag('span')

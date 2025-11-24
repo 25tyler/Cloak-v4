@@ -14,7 +14,7 @@ CORS(app)
 # Configuration
 API_URL = os.environ.get('API_URL', 'http://localhost:5001')
 NYT_HTML_PATH = os.path.join(os.path.dirname(__file__), 'nyt.html')
-SECRET_KEY = int(os.environ.get('SECRET_KEY', '29202393'))  # Default secret key
+SECRET_KEY = int(os.environ.get('SECRET_KEY', '17292006'))  # Default secret key
 
 # Cache the encrypted HTML
 _cached_encrypted_html = None
