@@ -68,6 +68,10 @@
             margin-bottom: 15px;
             font-size: 1.1em;
             line-height: 1.8;
+            /* Prevent breaking words in the middle */
+            word-break: normal;
+            overflow-wrap: normal;
+            word-wrap: normal;
         }
         
         .status {
@@ -121,6 +125,56 @@
         .spacing-test strong {
             color: #667eea;
         }
+        
+        .mappings-display {
+            background: white;
+            padding: 20px;
+            border-radius: 6px;
+            margin-top: 15px;
+            border: 2px solid #667eea;
+        }
+        
+        .mappings-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .mapping-group {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 3px solid #667eea;
+        }
+        
+        .mapping-group h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+        
+        .mapping-item {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            padding: 3px 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        
+        .mapping-item:last-child {
+            border-bottom: none;
+        }
+        
+        .mapping-char {
+            display: inline-block;
+            width: 30px;
+            font-weight: bold;
+        }
+        
+        .mapping-arrow {
+            margin: 0 10px;
+            color: #6c757d;
+        }
     </style>
 </head>
 <body>
@@ -135,7 +189,7 @@
         <div class="content">
             <div class="test-section">
                 <h2>Test 1: Normal Paragraph</h2>
-                <p>This is a normal paragraph with regular spacing between words. The quick brown fox jumps over the lazy dog. Each word should have consistent spacing, and the text should flow naturally without any large gaps or cramped spacing between words.</p>
+                <p>This is quark a normal paragraph with regular spacing between words. The quick brown fox jumps over the lazy dog. Each word should have consistent spacing, and the text should flow naturally without any large gaps or cramped spacing between words.</p>
             </div>
             
             <div class="test-section">
@@ -171,8 +225,17 @@
                 </div>
             </div>
             
-            <div class="key-display">
+            <div class="key-display no-encrypt">
                 <div>Secret Key: <span id="secretKeyValue">Generating...</span></div>
+                <div style="margin-top: 10px;">Nonce: <span id="nonceValue">Calculating...</span></div>
+            </div>
+            
+            <div class="test-section no-encrypt">
+                <h2>Character Mappings</h2>
+                <div class="mappings-display no-encrypt">
+                    <p><strong>Encryption Mappings:</strong> Original character → Encrypted character</p>
+                    <div id="mappingsContainer" class="no-encrypt">Loading mappings...</div>
+                </div>
             </div>
         </div>
     </div>
@@ -195,7 +258,115 @@
             setTimeout(function() {
                 status.className = 'status';
             }, 3000);
+            
+            // Fetch and display mappings
+            fetchMappings(randomSecretKey);
         });
+        
+        async function fetchMappings(secretKey) {
+            try {
+                // First, get a sample text to calculate nonce
+                const sampleText = document.querySelector('.test-section p').textContent;
+                
+                // Fetch mappings
+                const response = await fetch('http://localhost:5001/api/mappings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        secret_key: secretKey,
+                        text: sampleText
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Display nonce
+                const nonceDisplay = document.getElementById('nonceValue');
+                if (nonceDisplay) {
+                    nonceDisplay.textContent = data.nonce;
+                }
+                
+                // Display mappings
+                displayMappings(data);
+            } catch (error) {
+                console.error('Error fetching mappings:', error);
+                const container = document.getElementById('mappingsContainer');
+                if (container) {
+                    container.innerHTML = `<p style="color: #dc3545;">Error loading mappings: ${error.message}</p>`;
+                }
+            }
+        }
+        
+        function displayMappings(data) {
+            const container = document.getElementById('mappingsContainer');
+            if (!container) return;
+            
+            let html = '<div class="mappings-grid">';
+            
+            // Uppercase mappings
+            if (data.upper_map && Object.keys(data.upper_map).length > 0) {
+                html += '<div class="mapping-group">';
+                html += '<h3>Uppercase (A-Z)</h3>';
+                const upperSorted = Object.entries(data.upper_map).sort((a, b) => a[0].localeCompare(b[0]));
+                upperSorted.forEach(([original, encrypted]) => {
+                    html += `<div class="mapping-item">`;
+                    html += `<span class="mapping-char">${original}</span>`;
+                    html += `<span class="mapping-arrow">→</span>`;
+                    html += `<span class="mapping-char">${encrypted}</span>`;
+                    html += `</div>`;
+                });
+                html += '</div>';
+            }
+            
+            // Lowercase mappings
+            if (data.lower_map && Object.keys(data.lower_map).length > 0) {
+                html += '<div class="mapping-group">';
+                html += '<h3>Lowercase + Space + Period</h3>';
+                const lowerSorted = Object.entries(data.lower_map).sort((a, b) => {
+                    // Sort: space first, then period, then letters
+                    if (a[0] === ' ') return -1;
+                    if (b[0] === ' ') return 1;
+                    if (a[0] === '.') return -1;
+                    if (b[0] === '.') return 1;
+                    return a[0].localeCompare(b[0]);
+                });
+                lowerSorted.forEach(([original, encrypted]) => {
+                    const origDisplay = original === ' ' ? '[space]' : original === '.' ? '[period]' : original;
+                    const encDisplay = encrypted === ' ' ? '[space]' : encrypted;
+                    html += `<div class="mapping-item">`;
+                    html += `<span class="mapping-char">${origDisplay}</span>`;
+                    html += `<span class="mapping-arrow">→</span>`;
+                    html += `<span class="mapping-char">${encDisplay}</span>`;
+                    html += `</div>`;
+                });
+                html += '</div>';
+            }
+            
+            // Special mappings
+            if (data.space_map && Object.keys(data.space_map).length > 0) {
+                html += '<div class="mapping-group">';
+                html += '<h3>Special Characters</h3>';
+                Object.entries(data.space_map).forEach(([original, encrypted]) => {
+                    const origDisplay = original === '\x00' ? '[null]' : original === '\n' ? '[newline]' : original;
+                    const encDisplay = encrypted === '\x00' ? '[null]' : encrypted === '\n' ? '[newline]' : encrypted;
+                    html += `<div class="mapping-item">`;
+                    html += `<span class="mapping-char">${origDisplay}</span>`;
+                    html += `<span class="mapping-arrow">→</span>`;
+                    html += `<span class="mapping-char">${encDisplay}</span>`;
+                    html += `</div>`;
+                });
+                html += '</div>';
+            }
+            
+            html += '</div>';
+            container.innerHTML = html;
+        }
         
         // Create script element with the random secret key
         const encryptScript = document.createElement('script');

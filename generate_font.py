@@ -19,9 +19,54 @@ except ImportError:
     from fontTools.ttLib import TTFont
 
 # Import encryption functions for dynamic mapping
-from Fiesty import enc
+from Fiesty import enc27, enc54, dec54
 UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
+LOWERCASE = "abcdefghijklmnopqrstuvwxyz ."  # Includes space and period (28 characters)
+# Unified character set: uppercase (0-25) + lowercase+space+period (26-53) = 54 total
+UNIFIED_CHARS = UPPERCASE + LOWERCASE  # 26 + 28 = 54 characters
+
+def generate_unified_mapping(sk: int, nonce: int) -> dict:
+    """
+    Generate unified character mapping using Feistel cipher for all 54 characters.
+    Maps each character in UNIFIED_CHARS to its encrypted version.
+    Creates one big cycle: uppercase (0-25) + lowercase+space+period (26-53).
+    
+    Args:
+        sk: Secret key
+        nonce: Nonce value
+    
+    Returns:
+        Dictionary mapping original char -> encrypted char
+    """
+    mapping = {}
+    used_chars = set()  # Track which characters are already mapped to
+    
+    # First pass: map all positions that encrypt to valid range
+    for i, char in enumerate(UNIFIED_CHARS):
+        encrypted_pos = enc54(sk, nonce, i)
+        if encrypted_pos < len(UNIFIED_CHARS):
+            target_char = UNIFIED_CHARS[encrypted_pos]
+            mapping[char] = target_char
+            used_chars.add(target_char)
+    
+    # Second pass: handle positions that encrypt outside range (shouldn't happen with enc54, but safety)
+    for i, char in enumerate(UNIFIED_CHARS):
+        if char not in mapping:
+            encrypted_pos = enc54(sk, nonce, i)
+            # Wrap to valid range
+            target_pos = encrypted_pos % len(UNIFIED_CHARS)
+            target_char = UNIFIED_CHARS[target_pos]
+            # If target is already used, find first unused
+            if target_char in used_chars:
+                for j in range(len(UNIFIED_CHARS)):
+                    candidate = UNIFIED_CHARS[j]
+                    if candidate not in used_chars:
+                        target_char = candidate
+                        break
+            mapping[char] = target_char
+            used_chars.add(target_char)
+    
+    return mapping
 
 def generate_char_mapping(sk: int, nonce: int, char_set: str) -> dict:
     """
@@ -45,7 +90,7 @@ def generate_char_mapping(sk: int, nonce: int, char_set: str) -> dict:
     
     # First pass: map all positions that encrypt to < 26
     for i, char in enumerate(char_set):
-        encrypted_pos = enc(sk, nonce, i)
+        encrypted_pos = enc27(sk, nonce, i)
         if encrypted_pos < len(char_set):
             target_char = char_set[encrypted_pos]
             mapping[char] = target_char
@@ -53,7 +98,7 @@ def generate_char_mapping(sk: int, nonce: int, char_set: str) -> dict:
     
     # Second pass: handle positions that encrypt to 26 (wrap to unused character)
     for i, char in enumerate(char_set):
-        encrypted_pos = enc(sk, nonce, i)
+        encrypted_pos = enc27(sk, nonce, i)
         if encrypted_pos >= len(char_set):  # Position 26
             # Find first unused character to avoid collision
             for j in range(len(char_set)):
@@ -71,23 +116,173 @@ def generate_char_mapping(sk: int, nonce: int, char_set: str) -> dict:
 
 def get_dynamic_mappings(sk: int, nonce: int) -> tuple:
     """
-    Get all dynamic mappings (uppercase, lowercase, space) for given sk and nonce.
-    Returns (upper_map, lower_map, space_map)
+    Get unified dynamic mapping for all 54 characters (uppercase + lowercase + space + period).
+    Returns (unified_map, unified_map, space_map) for compatibility.
     
-    NOTE: Spaces are NOT encrypted - they pass through unchanged.
-    space_map is kept for backward compatibility but will be empty.
+    Uses a single Feistel cipher cycle for all characters.
+    The font will handle case differences in rendering.
+    
+    CRITICAL: All 54 characters (including space) must be used as targets in the cycle.
+    Space can be a target (other characters can map to it), but space itself should not map to space.
     """
-    upper_map = generate_char_mapping(sk, nonce, UPPERCASE)
-    lower_map = generate_char_mapping(sk, nonce, LOWERCASE)
+    # Generate unified mapping for all 54 characters
+    unified_map = generate_unified_mapping(sk, nonce)
     
-    # Spaces are NOT encrypted - they pass through unchanged
-    # This prevents letters from becoming spaces (which causes width mismatches)
-    # space_map is kept empty for backward compatibility
-    space_map = {}
+    # CRITICAL: Ensure space does not map to itself (to prevent CSS line breaks).
+    # But space CAN be used as a target by other characters - all 54 characters must be in the cycle.
+    if unified_map.get(' ', ' ') == ' ':
+        # Space maps to itself - we need to swap it with another character
+        # Find a character that doesn't map to space, and swap their targets
+        for char in UNIFIED_CHARS:
+            if char != ' ' and unified_map.get(char) != ' ':
+                # Swap: space -> char's target, char -> space
+                char_target = unified_map[char]
+                unified_map[' '] = char_target
+                unified_map[char] = ' '
+                break
     
-    # Other special characters (null -> newline) - kept for font display purposes
-    special_map = {"\x00": "\n"}
-    space_map.update(special_map)
+    # Fix bijectivity issues (duplicates) in a loop
+    # This ensures the mapping is one-to-one (bijective) so decryption works correctly
+    # Key insight: All 54 characters (including space) must be used as both sources and targets
+    # The only constraint is that space should not map to itself
+    max_iterations = 100
+    iterations_used = 0
+    for iteration in range(max_iterations):
+        iterations_used = iteration + 1
+        # CRITICAL: Snapshot current state before checking for duplicates
+        # This ensures we're working with consistent data
+        current_state = dict(unified_map)
+        
+        # Build target -> sources mapping to find duplicates
+        # Use the snapshot to ensure consistency
+        target_to_sources = {}
+        for source, target in current_state.items():
+            if target not in target_to_sources:
+                target_to_sources[target] = []
+            target_to_sources[target].append(source)
+        
+        # Collect all sources that need reassignment (duplicates and space->space)
+        sources_to_reassign = []
+        for target, sources in target_to_sources.items():
+            if target == ' ' and ' ' in sources:
+                # Space is mapping to itself - reassign space (keep others that map to space)
+                sources_to_reassign.append(' ')
+            elif len(sources) > 1:
+                # Multiple sources map to same target - keep first, reassign ALL others
+                sources_to_reassign.extend(sources[1:])
+        
+        # If no issues found, we're done
+        if not sources_to_reassign:
+            break
+        
+        # Remove duplicates from sources_to_reassign (a source might appear multiple times)
+        sources_to_reassign = list(dict.fromkeys(sources_to_reassign))
+        
+        # Reassign each problematic source
+        # Process in a stable order to ensure deterministic results
+        # CRITICAL: Rebuild used_targets for each source to account for previous reassignments
+        current_duplicate_targets = {target for target, sources in target_to_sources.items() 
+                                    if len(sources) > 1}
+        
+        # CRITICAL: Process sources one at a time and rebuild state after each reassignment
+        # This ensures we're always working with the current state, not stale data
+        for source in sorted(sources_to_reassign):
+            old_target = unified_map[source]
+            
+            # Build used_targets: all targets currently used by other sources
+            # Exclude the current source from consideration
+            # CRITICAL: Rebuild this from the CURRENT state of unified_map (which may have been modified by previous reassignments)
+            used_targets = {t for s, t in unified_map.items() if s != source}
+            
+            # Find an unused target
+            # For space: can use any target except space itself
+            # For others: can use any target (including space, but not the old_target)
+            reassigned = False
+            # First try: unused targets without duplicates
+            for candidate in UNIFIED_CHARS:
+                if source == ' ':
+                    # Space cannot map to itself
+                    if candidate == ' ':
+                        continue
+                else:
+                    # Other characters cannot map to their old target
+                    if candidate == old_target:
+                        continue
+                
+                if candidate not in used_targets and candidate not in current_duplicate_targets:
+                    unified_map[source] = candidate
+                    reassigned = True
+                    break
+            
+            # Second try: unused targets even if they have duplicates (will create new duplicate, but next iteration fixes)
+            if not reassigned:
+                for candidate in UNIFIED_CHARS:
+                    if source == ' ':
+                        # Space cannot map to itself
+                        if candidate == ' ':
+                            continue
+                    else:
+                        # Other characters cannot map to their old target
+                        if candidate == old_target:
+                            continue
+                    
+                    if candidate not in used_targets:
+                        unified_map[source] = candidate
+                        reassigned = True
+                        break
+            
+            # If no unused target available, we need to do a swap
+            # This happens when all targets are already used
+            # Strategy: Swap source with ANY other source to break the duplicate
+            if not reassigned:
+                # Find any source we can swap with (excluding source itself)
+                for swap_source in UNIFIED_CHARS:
+                    if swap_source == source:
+                        continue
+                    
+                    swap_source_target = current_state.get(swap_source)
+                    if swap_source_target is None:
+                        continue
+                    
+                    # For space: cannot swap to space
+                    if source == ' ' and swap_source_target == ' ':
+                        continue
+                    
+                    # For others: cannot swap to old_target
+                    if source != ' ' and swap_source_target == old_target:
+                        continue
+                    
+                    # Direct swap: source -> swap_source_target, swap_source -> old_target
+                    # This will work as long as swap_source_target != old_target
+                    if swap_source_target != old_target:
+                        unified_map[source] = swap_source_target
+                        unified_map[swap_source] = old_target
+                        reassigned = True
+                        break
+            
+            # Last resort: assign to any target (will create duplicate, next iteration fixes it)
+            if not reassigned:
+                for candidate in UNIFIED_CHARS:
+                    if source == ' ':
+                        # Space cannot map to itself
+                        if candidate == ' ':
+                            continue
+                    else:
+                        # Other characters cannot map to their old target
+                        if candidate == old_target:
+                            continue
+                    
+                    unified_map[source] = candidate
+                    reassigned = True
+                    break
+    
+    # Split unified_map into upper_map and lower_map for compatibility
+    # But they're actually the same unified mapping
+    upper_map = {char: unified_map[char] for char in UPPERCASE if char in unified_map}
+    lower_map = {char: unified_map[char] for char in LOWERCASE if char in unified_map}
+    
+    # Special characters (null -> newline) - kept for font display purposes
+    space_map = {"\x00": "\n"}
     
     return upper_map, lower_map, space_map
 
@@ -103,13 +298,30 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
     glyf_table = font['glyf']
     hmtx = font['hmtx'] if 'hmtx' in font else None
 
+    # DEBUG: Check if space is in character map
+    if ' ' in char_to_glyph:
+        print(f"  DEBUG: Space found in font character map: ' ' -> glyph '{char_to_glyph[' ']}'")
+    else:
+        print(f"  ⚠️  WARNING: Space NOT found in font character map!")
+        print(f"     Available characters in font: {sorted([c for c in char_to_glyph.keys() if c.isprintable()])[:20]}...")
+    
     # Build a unified mapping list (dest_glyph, src_glyph, display strings)
     mappings = []
+    dest_glyph_seen = {}  # Track which dest_glyphs we've seen to detect duplicates
     for mapping in (font_mapping_upper, font_mapping_lower, font_mapping_special):
         for encrypted_char, original_char in mapping.items():
             if original_char in char_to_glyph and encrypted_char in char_to_glyph:
                 src_glyph = char_to_glyph[original_char]
                 dest_glyph = char_to_glyph[encrypted_char]
+                # Check for duplicate dest_glyph (shouldn't happen if bijective, but verify)
+                if dest_glyph in dest_glyph_seen:
+                    prev_enc, prev_orig = dest_glyph_seen[dest_glyph]
+                    print(f"  ⚠️  WARNING: Duplicate dest_glyph '{dest_glyph}':")
+                    print(f"     Previously: {repr(prev_enc)} -> {repr(prev_orig)}")
+                    print(f"     Now: {repr(encrypted_char)} -> {repr(original_char)}")
+                    print(f"     This will cause the second mapping to overwrite the first!")
+                else:
+                    dest_glyph_seen[dest_glyph] = (encrypted_char, original_char)
                 mappings.append((dest_glyph, src_glyph, encrypted_char, original_char))
             else:
                 missing = []
@@ -117,7 +329,14 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
                     missing.append(f"original {repr(original_char)}")
                 if encrypted_char not in char_to_glyph:
                     missing.append(f"encrypted {repr(encrypted_char)}")
-                print(f"  Skipped: {repr(encrypted_char)} -> {repr(original_char)} (missing: {', '.join(missing)})")
+                # Special debug for space
+                if encrypted_char == ' ' or original_char == ' ':
+                    print(f"  ⚠️  CRITICAL: Space mapping skipped!")
+                    print(f"     encrypted_char: {repr(encrypted_char)}, original_char: {repr(original_char)}")
+                    print(f"     missing: {', '.join(missing)}")
+                    print(f"     char_to_glyph has space: {' ' in char_to_glyph}")
+                else:
+                    print(f"  Skipped: {repr(encrypted_char)} -> {repr(original_char)} (missing: {', '.join(missing)})")
 
     # Snapshot source glyphs and metrics so cycles can't clobber later copies
     # Also store original character widths for verification
@@ -164,7 +383,10 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
         try:
             if src_glyph in glyph_snapshot and dest_glyph in glyf_table:
                 # Copy the glyph outline
-                glyf_table[dest_glyph] = copy.deepcopy(glyph_snapshot[src_glyph])
+                # Directly assign the glyph from snapshot (fontTools handles this correctly)
+                src_glyph_obj = glyph_snapshot[src_glyph]
+                # Simply assign - fontTools will handle the copy internally
+                glyf_table[dest_glyph] = copy.deepcopy(src_glyph_obj)
                 # Copy the horizontal metrics (advance width and left side bearing)
                 # CRITICAL: Always use source metrics for zero visual change
                 # Source metrics = what original text used = what we must preserve exactly
@@ -210,7 +432,27 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
                 swaps_made += 1
                 enc_disp = repr(encrypted_char) if encrypted_char in [' ', '\x00', '\n'] else f"'{encrypted_char}'"
                 orig_disp = repr(original_char) if original_char in [' ', '\x00', '\n'] else f"'{original_char}'"
-                print(f"  Swapped: {enc_disp} now shows {orig_disp} glyph")
+                # Special debug for space to check width and glyph outline
+                if encrypted_char == ' ':
+                    width_info = ""
+                    outline_info = ""
+                    if hmtx and dest_glyph in hmtx.metrics:
+                        width_info = f" (width: {hmtx.metrics[dest_glyph][0]})"
+                    # Check if glyph has outline (is not empty)
+                    if dest_glyph in glyf_table:
+                        glyph_obj = glyf_table[dest_glyph]
+                        if hasattr(glyph_obj, 'numberOfContours'):
+                            if glyph_obj.numberOfContours > 0:
+                                outline_info = f" (has {glyph_obj.numberOfContours} contours)"
+                            else:
+                                outline_info = " (EMPTY OUTLINE - this will be invisible!)"
+                        elif hasattr(glyph_obj, 'data') and glyph_obj.data:
+                            outline_info = " (has outline data)"
+                        else:
+                            outline_info = " (NO OUTLINE DATA - this will be invisible!)"
+                    print(f"  Swapped: {enc_disp} now shows {orig_disp} glyph{width_info}{outline_info}")
+                else:
+                    print(f"  Swapped: {enc_disp} now shows {orig_disp} glyph")
         except Exception as e:
             print(f"  Warning: Could not swap {repr(encrypted_char)} -> {repr(original_char)}: {e}")
 
@@ -218,24 +460,71 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
 
 def create_decryption_font_from_mappings(input_font_path, output_font_path, upper_map, lower_map, space_map):
     """
-    Create a decryption font using pre-computed mappings.
+    Create a decryption font using pre-computed unified mappings.
     This avoids recalculating mappings that were already computed during encryption.
     
     Args:
         input_font_path: Path to the base font file
         output_font_path: Path where the decryption font will be saved
         upper_map: Dictionary mapping original -> encrypted for uppercase (from get_dynamic_mappings)
-        lower_map: Dictionary mapping original -> encrypted for lowercase (from get_dynamic_mappings)
-        space_map: Dictionary mapping original -> encrypted for space/special (from get_dynamic_mappings)
+        lower_map: Dictionary mapping original -> encrypted for lowercase + space (from get_dynamic_mappings)
+        space_map: Dictionary mapping original -> encrypted for special chars only (from get_dynamic_mappings)
     """
     print(f"Loading font: {input_font_path}")
     font = TTFont(input_font_path)
     
-    # Create reverse mappings for the font (encrypted -> original)
+    # Create unified reverse mapping for the font (encrypted -> original)
+    # With unified mapping, we need to combine all mappings into one
     # When encrypted text is displayed, we want to show original glyphs
-    font_mapping_upper = {v: k for k, v in upper_map.items()}  # encrypted -> original
-    font_mapping_lower = {v: k for k, v in lower_map.items()}  # encrypted -> original
+    # Since we have cross-case mappings, we need a unified font mapping
+    # IMPORTANT: Space CAN appear in encrypted text (as a target from other characters).
+    # The character that space encrypts to (e.g., 'B') SHOULD be in the font mapping to show the space glyph.
+    # When space appears in encrypted text, it should show the glyph of the character that maps to space.
+    unified_encryption_map = {**upper_map, **lower_map}
+    unified_font_mapping = {v: k for k, v in unified_encryption_map.items()}  # encrypted -> original (unified)
+    
+    # Split into upper/lower for compatibility with swap_glyphs_in_font
+    # But we need to ensure all encrypted characters are covered
+    font_mapping_upper = {}
+    font_mapping_lower = {}
+    
+    # Populate font mappings based on the encrypted character's case
+    # This ensures cross-case mappings are handled correctly
+    # CRITICAL: Space CAN appear in encrypted text (as a target), so we need to handle it
+    # If space appears in encrypted text, it should show the glyph of whatever character maps to space
+    # CRITICAL: Include period (.) and other non-alphabetic characters from LOWERCASE
+    for encrypted_char, original_char in unified_font_mapping.items():
+        if encrypted_char.isupper():
+            font_mapping_upper[encrypted_char] = original_char
+        elif encrypted_char.islower() or encrypted_char in LOWERCASE or encrypted_char == ' ':
+            # Include lowercase letters, non-alphabetic chars from LOWERCASE (like period), and space
+            font_mapping_lower[encrypted_char] = original_char
+    
+    # DEBUG: Print space mapping to verify it's included
+    if ' ' in font_mapping_lower:
+        space_target = font_mapping_lower[' ']
+        print(f"  DEBUG: Space in font_mapping_lower: ' ' -> {repr(space_target)}")
+        print(f"         This means when space appears in encrypted text, it should show the '{space_target}' glyph")
+        # Check if space_target is also in the font mapping (shouldn't be, but verify)
+        if space_target in unified_font_mapping:
+            print(f"  ⚠️  WARNING: '{space_target}' is also in unified_font_mapping as a key!")
+            print(f"         This could cause conflicts. Space should map to a character that doesn't appear in encrypted text.")
+    else:
+        print(f"  ⚠️  WARNING: Space NOT in font_mapping_lower!")
+        print(f"     unified_font_mapping keys: {sorted(unified_font_mapping.keys())}")
+        if ' ' in unified_font_mapping:
+            print(f"     Space IS in unified_font_mapping: ' ' -> {repr(unified_font_mapping[' '])}")
+            print(f"     But it wasn't added to font_mapping_lower - this is a bug!")
+    
     font_mapping_special = {v: k for k, v in space_map.items()}  # encrypted -> original
+    
+    # CRITICAL: Also map non-breaking space (U+00A0) to the same glyph as regular space (U+0020)
+    # This allows the client to replace spaces with non-breaking spaces to prevent line breaks
+    # while still rendering the correct glyph
+    if ' ' in font_mapping_lower:
+        # Non-breaking space should show the same glyph as regular space
+        font_mapping_lower['\u00A0'] = font_mapping_lower[' ']
+        print(f"  DEBUG: Added non-breaking space mapping: '\\u00A0' -> {repr(font_mapping_lower[' '])}")
     
     print("Swapping glyphs...")
     swaps_made = swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mapping_special)
@@ -247,8 +536,8 @@ def create_decryption_font_from_mappings(input_font_path, output_font_path, uppe
         name_table = font['name']
         for record in name_table.names:
             if record.nameID == 1:  # Family name
-                record.string = 'DecryptionFont'
-        print("Updated font family name to 'DecryptionFont'")
+                record.string = 'EncryptedFont'  # Must match CONFIG.fontName in encrypt-page.js
+        print("Updated font family name to 'EncryptedFont'")
     
     # Save as TTF first
     ttf_output = output_font_path.replace('.woff2', '.ttf')
@@ -265,8 +554,9 @@ def create_decryption_font_from_mappings(input_font_path, output_font_path, uppe
         return True
     except Exception as e:
         print(f"⚠️  Could not create WOFF2, but TTF was saved: {e}")
-        print(f"   You can convert {ttf_output} to WOFF2 manually")
-        return False
+        print(f"   Will use TTF file instead: {ttf_output}")
+        # Return TTF path instead of WOFF2 path
+        return ttf_output  # Return TTF path so caller knows to use it
 
 def create_decryption_font(input_font_path, output_font_path, secret_key: int, nonce: int):
     """
