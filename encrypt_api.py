@@ -17,10 +17,6 @@ try:
     BS4_AVAILABLE = True
 except ImportError:
     BS4_AVAILABLE = False
-from Fiesty import enc27, dec27, enc54, dec54
-# Aliases for backward compatibility
-enc = enc27
-dec = dec27
 from generate_font import (
     create_decryption_font_from_mappings,
     get_dynamic_mappings,
@@ -317,8 +313,9 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
             if r2_url:
                 if DEBUG_MODE:
                     print(f"✅ Font uploaded to R2: {r2_url}")
-                # Use proxy URL to avoid CORS issues
+                # ALWAYS use proxy URL to avoid CORS issues - never use direct R2 URL
                 # Try base_url, then BASE_URL env var, then request.url_root (if in request context)
+                # Default to API server URL if nothing else is available
                 if base_url:
                     resolved_base = base_url
                 elif os.environ.get('BASE_URL'):
@@ -326,16 +323,16 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
                 elif has_request_context():
                     resolved_base = request.url_root.rstrip('/')
                 else:
-                    resolved_base = None
+                    # Default to API server URL (port 5001) to ensure proxy works
+                    api_port = os.environ.get('PORT', '5001')
+                    resolved_base = f"http://localhost:{api_port}"
+                    if DEBUG_MODE:
+                        print(f"⚠️ No base_url found, defaulting to API server: {resolved_base}")
                 
-                if resolved_base:
-                    # Add cache-busting timestamp to force browser to reload font
-                    import time
-                    cache_buster = int(time.time())
-                    proxy_url = f"{resolved_base.rstrip('/')}/proxy-font/{font_filename}?v={cache_buster}"
-                else:
-                    # Fallback: use R2 URL directly (may have CORS issues)
-                    proxy_url = r2_url
+                # Add cache-busting timestamp to force browser to reload font
+                import time
+                cache_buster = int(time.time())
+                proxy_url = f"{resolved_base.rstrip('/')}/proxy-font/{font_filename}?v={cache_buster}"
                 if DEBUG_MODE:
                     print(f"✅ Using proxy font URL (avoids CORS): {proxy_url}")
                 return font_filename, proxy_url
@@ -347,7 +344,21 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
                 print(f"Font was generated, attempting R2 upload...")
             r2_url = upload_font_to_r2(font_path, font_filename)
             if r2_url:
-                return font_filename, r2_url
+                # Even when R2 is not explicitly enabled, use proxy URL to avoid CORS
+                if base_url:
+                    resolved_base = base_url
+                elif os.environ.get('BASE_URL'):
+                    resolved_base = os.environ.get('BASE_URL')
+                elif has_request_context():
+                    resolved_base = request.url_root.rstrip('/')
+                else:
+                    api_port = os.environ.get('PORT', '5001')
+                    resolved_base = f"http://localhost:{api_port}"
+                
+                import time
+                cache_buster = int(time.time())
+                proxy_url = f"{resolved_base.rstrip('/')}/proxy-font/{font_filename}?v={cache_buster}"
+                return font_filename, proxy_url
         
     except Exception as e:
         if DEBUG_MODE:
@@ -536,6 +547,44 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
     replacements = []
     space_char = lower_map.get(' ', None)
     
+    # Track containers by text element so we can find the last word span in previous inline elements
+    element_to_container = {}
+    
+    # Helper function to find the last word span in a container
+    def find_last_word_span(container):
+        """Find the last word span in a container (span with word-break styling)"""
+        if not container:
+            return None
+        # Find all spans with word-break styling
+        word_spans = container.find_all('span', style=lambda x: x and 'word-break' in x)
+        if word_spans:
+            return word_spans[-1]
+        # If no word spans found, check if container has direct string content
+        if hasattr(container, 'string') and container.string:
+            return container
+        return None
+    
+    # Helper function to find the last word span in an inline element
+    def find_last_word_span_in_element(elem):
+        """Find the last word span in an inline element by searching for its containers"""
+        if not elem:
+            return None
+        # Search for all containers we created from text nodes inside this element
+        last_word_span = None
+        for text_elem, container in element_to_container.items():
+            # Check if this text element is inside the given element
+            if text_elem and hasattr(text_elem, 'parent'):
+                current = text_elem.parent
+                while current:
+                    if current == elem:
+                        # Found a text node inside this element
+                        word_span = find_last_word_span(container)
+                        if word_span:
+                            last_word_span = word_span
+                        break
+                    current = getattr(current, 'parent', None)
+        return last_word_span
+    
     for element, original_text in text_nodes:
         # CRITICAL: Preserve leading and trailing spaces from original text
         # This maintains spacing around hyperlinks and other inline elements
@@ -609,18 +658,10 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                     if all_prev_whitespace and hasattr(parent, 'name') and parent.name in block_elements:
                         container_will_start_line = True
         
-        # Strip leading spaces if container will start on a new line
-        # This prevents spaces from appearing at the beginning of lines
-        if container_will_start_line:
-            leading_spaces = ''
-        
-        # Add leading spaces as spaceChar characters (preserves spacing around links)
-        if leading_spaces and space_char:
-            leading_space_count = len(leading_spaces)
-            leading_space_span = soup.new_tag('span')
-            leading_space_span['style'] = 'display: inline-block; white-space: nowrap;'
-            leading_space_span.string = space_char * leading_space_count
-            container.append(leading_space_span)
+        # Don't add leading spaces as spans at the start
+        # Instead, we'll move them to be trailing spaces at the end
+        # This ensures newlines only happen AFTER space character spans, never before them
+        # (Works with dynamic layouts since space spans are always at the end)
         
         # Wrap encrypted text for proper word breaking (like client-side script)
         # CRITICAL: Handle spaces that are actually encrypted characters (like 't' or period)
@@ -631,6 +672,9 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
         # Check if any character encrypts to space (e.g., 't' encrypts to space)
         chars_that_encrypt_to_space = [char for char, encrypted in combined_map.items() if encrypted == ' ']
         has_chars_as_space = len(chars_that_encrypt_to_space) > 0
+        
+        # Track the last word span so we can append spaces to it
+        last_word_span = None
         
         if space_char and space_char in encrypted:
             # Split text by space_char (word boundaries from original spaces)
@@ -648,6 +692,7 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                                 word_span['style'] = 'display: inline-block; white-space: nowrap; word-break: keep-all;'
                                 word_span.string = subpart
                                 container.append(word_span)
+                                last_word_span = word_span
                             
                             # Add space (encrypted period) between subparts (except after last subpart)
                             # Use non-breaking space (U+00A0) to prevent HTML from collapsing it
@@ -667,6 +712,7 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                                 word_span['style'] = 'display: inline-block; white-space: nowrap; word-break: keep-all;'
                                 word_span.string = subpart
                                 container.append(word_span)
+                                last_word_span = word_span
                             
                             # Add space (encrypted character like 't') between subparts (except after last subpart)
                             # Use non-breaking space (U+00A0) to prevent HTML from collapsing it
@@ -682,13 +728,14 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                         word_span['style'] = 'display: inline-block; white-space: nowrap; word-break: keep-all;'
                         word_span.string = part
                         container.append(word_span)
+                        last_word_span = word_span
                 
-                # Add space_char between words (except after last word)
-                if i < len(parts) - 1:
-                    space_span = soup.new_tag('span')
-                    space_span['style'] = 'display: inline-block; white-space: nowrap;'
-                    space_span.string = space_char
-                    container.append(space_span)
+                # Add space_char to the end of the word span (not as separate span)
+                # This ensures newlines happen after the space, which is inside the word span
+                if i < len(parts) - 1 and last_word_span:
+                    # Append space_char to the last word span
+                    current_text = last_word_span.string or ''
+                    last_word_span.string = current_text + space_char
         elif (has_period_as_space or has_chars_as_space) and ' ' in encrypted:
             # No space_char in encrypted, but has spaces (encrypted periods or other chars like 't')
             # Split by space to separate encrypted characters
@@ -699,29 +746,67 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                     word_span['style'] = 'display: inline-block; white-space: nowrap; word-break: keep-all;'
                     word_span.string = part
                     container.append(word_span)
+                    last_word_span = word_span
                 
-                # Add space (encrypted character) between parts (except after last part)
+                # Add space (encrypted character) to the end of the word span (not as separate span)
                 # Use non-breaking space (U+00A0) to prevent HTML from collapsing it
                 # The font maps non-breaking space to the original character glyph (e.g., 't' or period)
-                if i < len(parts) - 1:
-                    char_span = soup.new_tag('span')
-                    char_span['style'] = 'display: inline-block; white-space: nowrap;'
-                    char_span.string = '\u00A0'  # Non-breaking space - will show as original char via font mapping
-                    container.append(char_span)
+                if i < len(parts) - 1 and last_word_span:
+                    current_text = last_word_span.string or ''
+                    last_word_span.string = current_text + '\u00A0'  # Non-breaking space - will show as original char via font mapping
         else:
             # No spaces, just wrap the whole encrypted text
             word_span = soup.new_tag('span')
             word_span['style'] = 'display: inline-block; white-space: nowrap; word-break: keep-all;'
             word_span.string = encrypted
             container.append(word_span)
+            last_word_span = word_span
         
-        # Add trailing spaces as spaceChar characters (preserves spacing around links)
-        if trailing_spaces and space_char:
-            trailing_space_count = len(trailing_spaces)
-            trailing_space_span = soup.new_tag('span')
-            trailing_space_span['style'] = 'display: inline-block; white-space: nowrap;'
-            trailing_space_span.string = space_char * trailing_space_count
-            container.append(trailing_space_span)
+        # Store container for this element so we can find it later
+        element_to_container[element] = container
+        
+        # Handle leading spaces: if previous sibling is an inline element, append to its last word span
+        # Otherwise, append to current text node's last word span
+        leading_spaces_to_append = leading_spaces
+        if leading_spaces and space_char:
+            # Check if previous sibling is an inline element
+            prev_sibling = element.previous_sibling
+            inline_elements = {'a', 'span', 'strong', 'em', 'b', 'i', 'u', 'code', 'mark', 'small', 'sub', 'sup', 'time', 'abbr', 'cite', 'q', 'dfn', 'var', 'samp', 'kbd'}
+            
+            # Skip whitespace-only text nodes
+            while prev_sibling:
+                if hasattr(prev_sibling, 'name'):
+                    # It's an element
+                    if prev_sibling.name in inline_elements:
+                        # Previous sibling is an inline element - append leading spaces to its last word span
+                        prev_last_word_span = find_last_word_span_in_element(prev_sibling)
+                        if prev_last_word_span:
+                            leading_space_count = len(leading_spaces)
+                            current_text = prev_last_word_span.string or ''
+                            prev_last_word_span.string = current_text + (space_char * leading_space_count)
+                            leading_spaces_to_append = ''  # Don't add to current text node
+                            break
+                    # If it's a block element or has visible content, stop looking
+                    block_elements = {'div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 
+                                    'blockquote', 'pre', 'section', 'article', 'header', 'footer', 
+                                    'nav', 'aside', 'table', 'tr', 'td', 'th', 'hr', 'figure', 'figcaption', 'body'}
+                    if prev_sibling.name in block_elements or prev_sibling.get_text(strip=True):
+                        break
+                elif isinstance(prev_sibling, str) or (hasattr(prev_sibling, 'strip') and callable(getattr(prev_sibling, 'strip'))):
+                    # It's a text node - if it has visible content, stop looking
+                    if str(prev_sibling).strip():
+                        break
+                prev_sibling = getattr(prev_sibling, 'previous_sibling', None)
+        
+        # Add trailing spaces to the last word span (not as separate span)
+        # Also include leading spaces if they weren't appended to previous element
+        # This ensures spaces are inside the word span, so newlines happen after the space
+        # (Works with dynamic layouts since spaces are part of the word span)
+        total_spaces = trailing_spaces + leading_spaces_to_append
+        if total_spaces and space_char and last_word_span:
+            trailing_space_count = len(total_spaces)
+            current_text = last_word_span.string or ''
+            last_word_span.string = current_text + (space_char * trailing_space_count)
         
         replacements.append((element, container))
     
@@ -872,12 +957,6 @@ def encrypt_metadata(soup, text_mapping: dict, secret_key: int, nonce: int):
         return ''.join(combined_map.get(char, char) for char in expanded)
     
     # Skip encrypting <title> tag - keep it unencrypted for browser tab display
-    # title_tag = soup.find('title')
-    # if title_tag and title_tag.string:
-    #     original_title = str(title_tag.string)
-    #     encrypted_title = encrypt_text_with_mapping(original_title)
-    #     title_tag.string = encrypted_title
-    #     stats['title_encrypted'] = True
     
     # Encrypt meta tags with text content
     meta_tags_to_encrypt = [
@@ -1315,7 +1394,13 @@ def encrypt_html():
                 return jsonify({'error': 'secret_key must be an integer'}), 400
         
         # Get base URL for font generation
+        # Always use API server URL (port 5001) for proxy fonts to avoid CORS
+        # This ensures fonts are proxied through the API server, not the serving server
         base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
+        if not base_url or 'localhost:8001' in base_url or '127.0.0.1:8001' in base_url:
+            # If base_url points to the serving server, use API server instead
+            api_port = os.environ.get('PORT', '5001')
+            base_url = f"http://localhost:{api_port}"
         
         # Encrypt HTML content
         soup, text_mapping, nonce, font_url, space_char = encrypt_html_content(
@@ -1559,12 +1644,7 @@ def nyt_encrypt():
         
         # If no HTML provided, fall back to reading nyt.html
         if not html_content:
-            nyt_file = os.path.join(os.path.dirname(__file__), 'nyt.html')
-            if not os.path.exists(nyt_file):
-                return jsonify({'error': 'No HTML content provided and nyt.html file not found'}), 404
-            
-            with open(nyt_file, 'r', encoding='utf-8') as f:
-                html_content = f.read()
+            return jsonify({'error': 'No HTML content provided and nyt.html file not found'}), 404
         
         # Get secret key (from JSON body, query param, or default)
         if secret_key is None:
@@ -1573,7 +1653,13 @@ def nyt_encrypt():
             secret_key = DEFAULT_SECRET_KEY
         
         # Get base URL for font generation
+        # Always use API server URL (port 5001) for proxy fonts to avoid CORS
+        # This ensures fonts are proxied through the API server, not the serving server
         base_url = os.environ.get('BASE_URL', request.url_root.rstrip('/'))
+        if not base_url or 'localhost:8001' in base_url or '127.0.0.1:8001' in base_url:
+            # If base_url points to the serving server, use API server instead
+            api_port = os.environ.get('PORT', '5001')
+            base_url = f"http://localhost:{api_port}"
         
         # Encrypt HTML content
         soup, text_mapping, nonce, font_url, space_char = encrypt_html_content(
@@ -1653,637 +1739,30 @@ html, body, body *, * {{
             # Get API base URL for decryption calls
             api_base_url = base_url.rstrip('/')
             
-            # Create script tag with copy interception
-            script_tag = soup.new_tag('script')
-            script_tag.string = f"""
-(function() {{
-    'use strict';
-    
-    // Store encryption parameters (secret_key and nonce only - no mappings for security)
-    const encryptionConfig = {{
-        secretKey: {secret_key},
-        nonce: {nonce},
-        apiBaseUrl: '{api_base_url}'
-    }};
-    
-    /**
-     * Decrypt text using the decryption API
-     * Handles zero-width spaces, non-breaking spaces, and special characters
-     */
-    async function decryptText(encryptedText) {{
-        if (!encryptionConfig.secretKey || !encryptionConfig.nonce) {{
-            return encryptedText;
-        }}
-        
-        // Remove zero-width spaces (U+200B) that were inserted for word-breaking
-        const textWithoutZWSP = encryptedText.replace(/\\u200B/g, '');
-        
-        // Replace non-breaking spaces (U+00A0) with regular spaces for decryption
-        // The font maps both regular spaces and non-breaking spaces to the same glyph
-        const normalizedText = textWithoutZWSP.replace(/\\u00A0/g, ' ');
-        
-        // Call the decryption API
-        try {{
-            const response = await fetch(`${{encryptionConfig.apiBaseUrl}}/api/decrypt`, {{
-                method: 'POST',
-                headers: {{
-                    'Content-Type': 'application/json',
-                }},
-                body: JSON.stringify({{
-                    encrypted: normalizedText,
-                    secret_key: encryptionConfig.secretKey,
-                    nonce: encryptionConfig.nonce
-                }})
-            }});
-            
-            if (!response.ok) {{
-                console.warn('Decryption API call failed:', response.status);
-                return encryptedText; // Return original if API fails
-            }}
-            
-            const data = await response.json();
-            return data.decrypted || encryptedText;
-        }} catch (error) {{
-            console.warn('Error calling decryption API:', error);
-            return encryptedText; // Return original if API call fails
-        }}
-    }}
-    
-    /**
-     * Intercept copy events and replace clipboard content with decrypted text
-     * This allows users to copy-paste normally while scrapers see encrypted text
-     * Note: Uses synchronous XMLHttpRequest because clipboardData API requires synchronous access
-     */
-    function setupCopyInterception() {{
-        document.addEventListener('copy', function(e) {{
-            // Only intercept if we have encryption config
-            if (!encryptionConfig.secretKey || !encryptionConfig.nonce) {{
-                return; // Let default copy behavior proceed
-            }}
-            
-            const selection = window.getSelection();
-            if (!selection || selection.rangeCount === 0) {{
-                return; // No selection, let default behavior proceed
-            }}
-            
-            // Get selected text (this will be the encrypted text)
-            const selectedText = selection.toString();
-            
-            if (!selectedText || selectedText.trim().length === 0) {{
-                return; // Empty selection, let default behavior proceed
-            }}
-            
-            // Prevent default copy behavior
-            e.preventDefault();
-            
-            // Decrypt synchronously using XMLHttpRequest (required for clipboardData API)
-            // Note: Synchronous XHR is deprecated but necessary here for clipboard operations
-            // Modern browsers may block synchronous XHR for cross-origin requests
-            let decryptedText = selectedText; // Default to encrypted text if decryption fails
-            
-            try {{
-                // Normalize text (remove zero-width spaces and normalize non-breaking spaces)
-                const textWithoutZWSP = selectedText.replace(/\\u200B/g, '');
-                const normalizedText = textWithoutZWSP.replace(/\\u00A0/g, ' ');
-                
-                // Make synchronous API call
-                const xhr = new XMLHttpRequest();
-                const apiUrl = `${{encryptionConfig.apiBaseUrl}}/api/decrypt`;
-                
-                // Check if we're on the same origin (synchronous XHR works better on same origin)
-                const isSameOrigin = new URL(apiUrl, window.location.href).origin === window.location.origin;
-                
-                if (!isSameOrigin) {{
-                    console.warn('Cross-origin synchronous XHR may be blocked by browser. API URL:', apiUrl);
-                }}
-                
-                xhr.open('POST', apiUrl, false); // false = synchronous
-                xhr.setRequestHeader('Content-Type', 'application/json');
-                
-                // Send request
-                xhr.send(JSON.stringify({{
-                    encrypted: normalizedText,
-                    secret_key: encryptionConfig.secretKey,
-                    nonce: encryptionConfig.nonce
-                }}));
-                
-                // Check response
-                if (xhr.status === 200) {{
-                    try {{
-                        const data = JSON.parse(xhr.responseText);
-                        decryptedText = data.decrypted || selectedText;
-                    }} catch (parseError) {{
-                        console.error('Failed to parse decryption response:', parseError, 'Response:', xhr.responseText);
-                        decryptedText = selectedText;
-                    }}
-                }} else {{
-                    console.error('Decryption API returned status:', xhr.status, xhr.statusText, 'Response:', xhr.responseText);
-                    decryptedText = selectedText;
-                }}
-            }} catch (error) {{
-                console.error('Decryption API call failed:', error);
-                console.error('This may be due to:', {{
-                    'Synchronous XHR blocked': 'Modern browsers block synchronous XHR for cross-origin requests',
-                    'CORS issue': 'Check CORS configuration on the API server',
-                    'Network error': 'Check if API is accessible at: ' + encryptionConfig.apiBaseUrl,
-                    'Error details': error.message
-                }});
-                // If decryption fails, use encrypted text (better than nothing)
-                decryptedText = selectedText;
-            }}
-            
-            // Set clipboard data with decrypted text
-            e.clipboardData.setData('text/plain', decryptedText);
-        }}, true); // Use capture phase to intercept early
-    }}
-    
-    // Setup copy interception immediately (before DOM is ready)
-    // This ensures it's set up before any copy events can occur
-    setupCopyInterception();
-    
-    // Also set up on DOMContentLoaded as a fallback
-    if (document.readyState === 'loading') {{
-        document.addEventListener('DOMContentLoaded', setupCopyInterception);
-    }}
-    
-    // ============================================================================
-    // SEARCH FUNCTIONALITY
-    // ============================================================================
-    
-    // Search state
-    const searchState = {{
-        overlay: null,
-        input: null,
-        matchCounter: null,
-        prevButton: null,
-        nextButton: null,
-        closeButton: null,
-        currentMatches: [],
-        currentMatchIndex: -1,
-        highlightElements: [],
-        lastOriginalQuery: '' // Store original query for case-insensitive search
-    }};
-    
-    // Ligatures mapping
-    const LIGATURES = {{"\\ufb00":"ff","\\ufb01":"fi","\\ufb02":"fl","\\ufb03":"ffi","\\ufb04":"ffl"}};
-    
-    function expandLigatures(text) {{
-        return text.split('').map(ch => LIGATURES[ch] || ch).join('');
-    }}
-    
-    /**
-     * Encrypt search query using the API (no mappings exposed in HTML)
-     */
-    async function encryptSearchQuery(query) {{
-        if (!query || query.length === 0) {{
-            return '';
-        }}
-        
-        if (!encryptionConfig.secretKey || !encryptionConfig.nonce) {{
-            return query; // Return as-is if config is missing
-        }}
-        
-        try {{
-            const response = await fetch(`${{encryptionConfig.apiBaseUrl}}/api/encrypt/query`, {{
-                method: 'POST',
-                headers: {{
-                    'Content-Type': 'application/json',
-                }},
-                body: JSON.stringify({{
-                    text: query,
-                    secret_key: encryptionConfig.secretKey,
-                    nonce: encryptionConfig.nonce
-                }})
-            }});
-            
-            if (!response.ok) {{
-                console.warn('Encrypt query API call failed:', response.status);
-                return query; // Return original if API fails
-            }}
-            
-            const data = await response.json();
-            return data.encrypted || query;
-        }} catch (error) {{
-            console.warn('Error calling encrypt query API:', error);
-            return query; // Return original if API call fails
-        }}
-    }}
-    
-    function isElementVisible(element) {{
-        if (!element || element.nodeType !== Node.ELEMENT_NODE) {{
-            return false;
-        }}
-        
-        // Check computed style
-        const style = window.getComputedStyle(element);
-        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {{
-            return false;
-        }}
-        
-        // Check if element has zero dimensions
-        const rect = element.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) {{
-            // Might be a line break or whitespace-only element, check if it has visible children
-            const children = Array.from(element.children);
-            if (children.length > 0) {{
-                // Check if any child is visible
-                return children.some(child => isElementVisible(child));
-            }}
-            // If no children and zero size, it's likely not visible
-            return false;
-        }}
-        
-        return true;
-    }}
-    
-    function extractTextNodesForSearch() {{
-        const textNodes = [];
-        const walker = document.createTreeWalker(
-            document.body,
-            NodeFilter.SHOW_TEXT,
-            {{
-                acceptNode: function(node) {{
-                    let parent = node.parentElement;
-                    while (parent && parent !== document.body) {{
-                        const tagName = parent.tagName ? parent.tagName.toLowerCase() : '';
-                        // Skip hidden elements
-                        if (['script', 'style', 'noscript', 'meta', 'title', 'head'].includes(tagName)) {{
-                            return NodeFilter.FILTER_REJECT;
-                        }}
-                        // Check if parent is visible
-                        if (!isElementVisible(parent)) {{
-                            return NodeFilter.FILTER_REJECT;
-                        }}
-                        parent = parent.parentElement;
-                    }}
-                    return NodeFilter.FILTER_ACCEPT;
-                }}
-            }}
-        );
-        
-        const rawNodes = [];
-        let node;
-        while (node = walker.nextNode()) {{
-            rawNodes.push(node);
-        }}
-        
-        const processedParents = new Set();
-        rawNodes.forEach(node => {{
-            let parent = node.parentElement;
-            while (parent && parent !== document.body) {{
-                const fontFamily = window.getComputedStyle(parent).fontFamily;
-                if (fontFamily.includes('EncryptedFont')) {{
-                    // Only process if parent is visible
-                    if (!isElementVisible(parent)) {{
-                        break;
-                    }}
-                    
-                    if (!processedParents.has(parent)) {{
-                        processedParents.add(parent);
-                        const text = parent.textContent;
-                        const normalizedText = text.replace(/\\u200B/g, '').replace(/\\u00A0/g, ' ');
-                        if (normalizedText.trim().length > 0) {{
-                            textNodes.push({{ node: node, parent: parent, text: normalizedText }});
-                        }}
-                    }}
-                    break;
-                }}
-                parent = parent.parentElement;
-            }}
-        }});
-        
-        return textNodes;
-    }}
-    
-    async function searchEncryptedDOM(encryptedQuery) {{
-        if (!encryptedQuery || encryptedQuery.length === 0) {{
-            return [];
-        }}
-        
-        const matches = [];
-        const textNodes = extractTextNodesForSearch();
-        const normalizedQuery = encryptedQuery.replace(/\\u200B/g, '').replace(/\\u00A0/g, ' ');
-        
-        // For case-insensitive search, encrypt common case variations of the original query
-        const originalQuery = searchState.lastOriginalQuery || '';
-        const queriesToSearch = [normalizedQuery]; // Always include the query as-is
-        
-        if (originalQuery) {{
-            // Encrypt lowercase version
-            const lowerEncrypted = await encryptSearchQuery(originalQuery.toLowerCase());
-            if (lowerEncrypted && lowerEncrypted !== normalizedQuery) {{
-                queriesToSearch.push(lowerEncrypted.replace(/\\u200B/g, '').replace(/\\u00A0/g, ' '));
-            }}
-            
-            // Encrypt uppercase version
-            const upperEncrypted = await encryptSearchQuery(originalQuery.toUpperCase());
-            if (upperEncrypted && upperEncrypted !== normalizedQuery) {{
-                queriesToSearch.push(upperEncrypted.replace(/\\u200B/g, '').replace(/\\u00A0/g, ' '));
-            }}
-            
-            // Encrypt title case (first letter uppercase, rest lowercase)
-            if (originalQuery.length > 0) {{
-                const titleCase = originalQuery[0].toUpperCase() + originalQuery.slice(1).toLowerCase();
-                const titleEncrypted = await encryptSearchQuery(titleCase);
-                if (titleEncrypted && titleEncrypted !== normalizedQuery) {{
-                    queriesToSearch.push(titleEncrypted.replace(/\\u200B/g, '').replace(/\\u00A0/g, ' '));
-                }}
-            }}
-        }}
-        
-        // Remove duplicates
-        const uniqueQueries = [...new Set(queriesToSearch)];
-        
-        for (const textNode of textNodes) {{
-            const text = textNode.text;
-            
-            // Search for each encrypted query variation
-            for (const queryToSearch of uniqueQueries) {{
-                let startIndex = 0;
-                while (true) {{
-                    const index = text.indexOf(queryToSearch, startIndex);
-                    if (index === -1) break;
-                    
-                    // Check if we already have this match (avoid duplicates)
-                    const isDuplicate = matches.some(m => 
-                        m.parent === textNode.parent && 
-                        m.startIndex === index && 
-                        m.endIndex === index + queryToSearch.length
-                    );
-                    
-                    if (!isDuplicate) {{
-                        matches.push({{
-                            node: textNode.node,
-                            parent: textNode.parent,
-                            startIndex: index,
-                            endIndex: index + queryToSearch.length,
-                            text: queryToSearch
-                        }});
-                    }}
-                    
-                    startIndex = index + 1;
-                }}
-            }}
-        }}
-        
-        return matches;
-    }}
-    
-    function clearHighlights() {{
-        searchState.highlightElements.forEach(el => {{
-            if (el.parentNode) {{
-                const parent = el.parentNode;
-                parent.replaceChild(document.createTextNode(el.textContent), el);
-                parent.normalize();
-            }}
-        }});
-        searchState.highlightElements = [];
-    }}
-    
-    function highlightMatches(matches, currentIndex) {{
-        clearHighlights();
-        if (matches.length === 0) return;
-        
-        const matchesByParent = new Map();
-        matches.forEach((match, index) => {{
-            const parent = match.parent;
-            if (!parent) return;
-            if (!matchesByParent.has(parent)) {{
-                matchesByParent.set(parent, []);
-            }}
-            matchesByParent.get(parent).push({{...match, matchIndex: index}});
-        }});
-        
-        matchesByParent.forEach((parentMatches, parent) => {{
-            if (!parent || !parent.parentNode) return;
-            
-            const walker = document.createTreeWalker(parent, NodeFilter.SHOW_TEXT, null);
-            const textNodes = [];
-            let node;
-            while (node = walker.nextNode()) {{
-                textNodes.push(node);
-            }}
-            if (textNodes.length === 0) return;
-            
-            let charOffset = 0;
-            const charToNode = [];
-            textNodes.forEach(textNode => {{
-                const text = textNode.textContent.replace(/\\u200B/g, '').replace(/\\u00A0/g, ' ');
-                for (let i = 0; i < text.length; i++) {{
-                    charToNode.push({{ node: textNode, offset: i, globalOffset: charOffset + i }});
-                }}
-                charOffset += text.length;
-            }});
-            
-            parentMatches.sort((a, b) => b.startIndex - a.startIndex);
-            parentMatches.forEach(match => {{
-                try {{
-                    const startChar = charToNode[match.startIndex];
-                    const endChar = charToNode[match.endIndex - 1];
-                    if (!startChar || !endChar) return;
-                    
-                    const range = document.createRange();
-                    range.setStart(startChar.node, startChar.offset);
-                    range.setEnd(endChar.node, endChar.offset + 1);
-                    
-                    const highlight = document.createElement('mark');
-                    highlight.className = 'encrypted-search-highlight';
-                    if (match.matchIndex === currentIndex) {{
-                        highlight.className += ' encrypted-search-current';
-                    }}
-                    highlight.style.backgroundColor = match.matchIndex === currentIndex ? '#ffeb3b' : '#fff59d';
-                    highlight.style.padding = '0';
-                    highlight.style.borderRadius = '2px';
-                    
-                    try {{
-                        range.surroundContents(highlight);
-                        searchState.highlightElements.push(highlight);
-                    }} catch (e) {{
-                        const contents = range.extractContents();
-                        highlight.appendChild(contents);
-                        range.insertNode(highlight);
-                        searchState.highlightElements.push(highlight);
-                    }}
-                }} catch (e) {{
-                    console.warn('Error highlighting match:', e);
-                }}
-            }});
-        }});
-        
-        if (currentIndex >= 0 && currentIndex < searchState.highlightElements.length) {{
-            const highlight = searchState.highlightElements[currentIndex];
-            if (highlight && highlight.parentNode) {{
-                highlight.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-            }}
-        }}
-    }}
-    
-    function navigateToMatch(direction) {{
-        const matches = searchState.currentMatches;
-        if (matches.length === 0) return;
-        
-        if (direction === 'next') {{
-            searchState.currentMatchIndex = (searchState.currentMatchIndex + 1) % matches.length;
-        }} else if (direction === 'prev') {{
-            searchState.currentMatchIndex = searchState.currentMatchIndex <= 0 
-                ? matches.length - 1 
-                : searchState.currentMatchIndex - 1;
-        }}
-        
-        highlightMatches(matches, searchState.currentMatchIndex);
-        updateMatchCounter();
-    }}
-    
-    function updateMatchCounter() {{
-        const count = searchState.currentMatches.length;
-        const index = searchState.currentMatchIndex;
-        if (count === 0) {{
-            searchState.matchCounter.textContent = 'No matches';
-        }} else {{
-            searchState.matchCounter.textContent = `${{index + 1}} of ${{count}}`;
-        }}
-    }}
-    
-    async function handleSearchInput(event) {{
-        const query = event.target.value;
-        // Store original query for case-insensitive search
-        searchState.lastOriginalQuery = query;
-        
-        if (!query || query.trim().length === 0) {{
-            clearHighlights();
-            searchState.currentMatches = [];
-            searchState.currentMatchIndex = -1;
-            updateMatchCounter();
-            return;
-        }}
-        
-        // Encrypt the query as-is (for display/search purposes)
-        const encryptedQuery = await encryptSearchQuery(query);
-        // The searchEncryptedDOM function will handle case-insensitive matching
-        const matches = await searchEncryptedDOM(encryptedQuery);
-        searchState.currentMatches = matches;
-        
-        if (matches.length > 0) {{
-            searchState.currentMatchIndex = 0;
-            highlightMatches(matches, 0);
-        }} else {{
-            searchState.currentMatchIndex = -1;
-            clearHighlights();
-        }}
-        
-        updateMatchCounter();
-    }}
-    
-    function createSearchOverlay() {{
-        const overlay = document.createElement('div');
-        overlay.id = 'encrypted-search-overlay';
-        overlay.style.cssText = `position: fixed; top: 20px; right: 20px; background: white; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); padding: 8px; z-index: 10000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; font-size: 14px; display: none;`;
-        
-        const inputContainer = document.createElement('div');
-        inputContainer.style.cssText = 'display: flex; align-items: center; gap: 8px;';
-        
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = 'Search...';
-        input.style.cssText = `border: 1px solid #ccc; border-radius: 2px; padding: 4px 8px; font-size: 14px; width: 200px; outline: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;`;
-        input.addEventListener('input', handleSearchInput);
-        input.addEventListener('keydown', function(e) {{
-            if (e.key === 'Enter' && !e.shiftKey) {{
-                e.preventDefault();
-                navigateToMatch('next');
-            }} else if (e.key === 'Enter' && e.shiftKey) {{
-                e.preventDefault();
-                navigateToMatch('prev');
-            }} else if (e.key === 'Escape') {{
-                e.preventDefault();
-                hideSearchOverlay();
-            }}
-        }});
-        
-        const matchCounter = document.createElement('span');
-        matchCounter.style.cssText = 'color: #666; font-size: 12px; min-width: 60px; text-align: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;';
-        matchCounter.textContent = 'No matches';
-        
-        const prevButton = document.createElement('button');
-        prevButton.textContent = '↑';
-        prevButton.title = 'Previous (Shift+Enter)';
-        prevButton.style.cssText = `border: 1px solid #ccc; background: white; border-radius: 2px; padding: 2px 8px; cursor: pointer; font-size: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;`;
-        prevButton.addEventListener('click', () => navigateToMatch('prev'));
-        
-        const nextButton = document.createElement('button');
-        nextButton.textContent = '↓';
-        nextButton.title = 'Next (Enter)';
-        nextButton.style.cssText = prevButton.style.cssText;
-        nextButton.addEventListener('click', () => navigateToMatch('next'));
-        
-        const closeButton = document.createElement('button');
-        closeButton.textContent = '×';
-        closeButton.title = 'Close (Esc)';
-        closeButton.style.cssText = `border: none; background: transparent; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1; color: #666; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;`;
-        closeButton.addEventListener('click', hideSearchOverlay);
-        
-        inputContainer.appendChild(input);
-        inputContainer.appendChild(matchCounter);
-        inputContainer.appendChild(prevButton);
-        inputContainer.appendChild(nextButton);
-        inputContainer.appendChild(closeButton);
-        overlay.appendChild(inputContainer);
-        
-        searchState.overlay = overlay;
-        searchState.input = input;
-        searchState.matchCounter = matchCounter;
-        searchState.prevButton = prevButton;
-        searchState.nextButton = nextButton;
-        searchState.closeButton = closeButton;
-        
-        return overlay;
-    }}
-    
-    function showSearchOverlay() {{
-        if (!searchState.overlay) {{
-            const overlay = createSearchOverlay();
-            document.body.appendChild(overlay);
-        }}
-        searchState.overlay.style.display = 'block';
-        searchState.input.focus();
-        searchState.input.select();
-    }}
-    
-    function hideSearchOverlay() {{
-        if (searchState.overlay) {{
-            searchState.overlay.style.display = 'none';
-            searchState.input.value = '';
-            clearHighlights();
-            searchState.currentMatches = [];
-            searchState.currentMatchIndex = -1;
-        }}
-    }}
-    
-    function setupSearchInterception() {{
-        document.addEventListener('keydown', function(e) {{
-            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {{
-                e.preventDefault();
-                e.stopPropagation();
-                showSearchOverlay();
-            }}
-        }}, true);
-    }}
-    
-    // Setup search interception immediately
-    setupSearchInterception();
-    if (document.readyState === 'loading') {{
-        document.addEventListener('DOMContentLoaded', setupSearchInterception);
-    }}
-}})();
+            # Create config script tag to set encryption parameters
+            config_script = soup.new_tag('script')
+            config_script.string = f"""
+window.encryptionConfig = {{
+    secretKey: {secret_key},
+    nonce: {nonce},
+    apiBaseUrl: '{api_base_url}'
+}};
 """
-            # Insert script tag in head (before closing head tag)
+            
+            # Create script tag to load the external decrypt-interceptor.js
+            script_tag = soup.new_tag('script')
+            script_tag['src'] = f'{api_base_url}/client/decrypt-interceptor.js'
+            
+            # Insert config script first, then the external script
             # Try to insert after style tag, or at the end of head
             style_tags = head.find_all('style')
             if style_tags:
                 # Insert after the last style tag
-                style_tags[-1].insert_after(script_tag)
+                style_tags[-1].insert_after(config_script)
+                config_script.insert_after(script_tag)
             else:
                 # No style tag, append to head
+                head.append(config_script)
                 head.append(script_tag)
         
         # Convert back to HTML string
@@ -2303,6 +1782,12 @@ def serve_encrypt_page_script():
     """Serve the automatic page encryption client script"""
     client_dir = os.path.join(os.path.dirname(__file__), 'client')
     return send_from_directory(client_dir, 'encrypt-page.js', mimetype='application/javascript')
+
+@app.route('/client/decrypt-interceptor.js', methods=['GET'])
+def serve_decrypt_interceptor_script():
+    """Serve the decryption interceptor script for server-side encrypted pages"""
+    client_dir = os.path.join(os.path.dirname(__file__), 'client')
+    return send_from_directory(client_dir, 'decrypt-interceptor.js', mimetype='application/javascript')
 
 @app.route('/api', methods=['GET'])
 def api_info():
@@ -2531,6 +2016,10 @@ def serve_font(filename):
     else:
         mimetype = None
     response = send_from_directory(fonts_dir, filename, mimetype=mimetype)
+    # Add CORS headers for Mac browser compatibility
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = '*'
     # Add no-cache headers to prevent browser caching of fonts
     response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     response.headers['Pragma'] = 'no-cache'

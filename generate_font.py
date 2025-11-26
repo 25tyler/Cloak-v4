@@ -19,7 +19,7 @@ except ImportError:
     from fontTools.ttLib import TTFont
 
 # Import encryption functions for dynamic mapping
-from Fiesty import enc27, enc54, dec54
+from Fiesty import enc54
 UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 LOWERCASE = "abcdefghijklmnopqrstuvwxyz ."  # Includes space and period (28 characters)
 # Unified character set: uppercase (0-25) + lowercase+space+period (26-53) = 54 total
@@ -65,52 +65,6 @@ def generate_unified_mapping(sk: int, nonce: int) -> dict:
                         break
             mapping[char] = target_char
             used_chars.add(target_char)
-    
-    return mapping
-
-def generate_char_mapping(sk: int, nonce: int, char_set: str) -> dict:
-    """
-    Generate dynamic character mapping using Feistel cipher.
-    Maps each character in char_set to its encrypted version.
-    Shared by the API and font generator to keep a single source of truth.
-    
-    CRITICAL: Ensures bijective (one-to-one) mapping to prevent collisions.
-    When position 26 wraps, it uses the first available unused character.
-    
-    Args:
-        sk: Secret key
-        nonce: Nonce value
-        char_set: String of characters to map (e.g., "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    
-    Returns:
-        Dictionary mapping original char -> encrypted char
-    """
-    mapping = {}
-    used_chars = set()  # Track which characters are already mapped to
-    
-    # First pass: map all positions that encrypt to < 26
-    for i, char in enumerate(char_set):
-        encrypted_pos = enc27(sk, nonce, i)
-        if encrypted_pos < len(char_set):
-            target_char = char_set[encrypted_pos]
-            mapping[char] = target_char
-            used_chars.add(target_char)
-    
-    # Second pass: handle positions that encrypt to 26 (wrap to unused character)
-    for i, char in enumerate(char_set):
-        encrypted_pos = enc27(sk, nonce, i)
-        if encrypted_pos >= len(char_set):  # Position 26
-            # Find first unused character to avoid collision
-            for j in range(len(char_set)):
-                candidate = char_set[j]
-                if candidate not in used_chars:
-                    mapping[char] = candidate
-                    used_chars.add(candidate)
-                    break
-            else:
-                # Should never happen (26 positions, 26 characters)
-                # But fallback: use modulo
-                mapping[char] = char_set[encrypted_pos % len(char_set)]
     
     return mapping
 
@@ -560,7 +514,7 @@ def create_decryption_font_from_mappings(input_font_path, output_font_path, uppe
 
 def create_decryption_font(input_font_path, output_font_path, secret_key: int, nonce: int):
     """
-    Create a decryption font using dynamic mappings from generate_char_mapping.
+    Create a decryption font using dynamic mappings from get_dynamic_mappings.
     This font will reverse the encryption mapping, so when encrypted characters
     are displayed in Unicode, they will show the decrypted (original) glyphs.
     
@@ -579,14 +533,6 @@ def create_decryption_font(input_font_path, output_font_path, secret_key: int, n
     
     # Use the optimized function that takes mappings directly
     return create_decryption_font_from_mappings(input_font_path, output_font_path, upper_map, lower_map, space_map)
-
-def create_encrypted_font(input_font_path, output_font_path):
-    """
-    Dynamic font generation was previously split between a hardcoded path and a
-    Feistel-based path. The static path has been removed in favor of the dynamic
-    approach. Use create_decryption_font instead.
-    """
-    raise RuntimeError("Static mapping font generation was removed. Use dynamic mappings.")
 
 if __name__ == '__main__':
     import argparse
