@@ -27,18 +27,26 @@ def handler(request):
                 'body': json.dumps({'error': 'Method not allowed'})
             }
         
-        # Get body from request (Vercel passes body as string or dict)
+        # Get body from request (Vercel Python runtime format)
+        # Vercel passes body as a string that needs to be parsed
         body = request.get('body', '')
         
-        # Parse JSON body
+        # Parse JSON body - handle both string and already-parsed dict
         try:
             if isinstance(body, str):
-                data = json.loads(body) if body else {}
+                # If body is a string, parse it
+                if body:
+                    data = json.loads(body)
+                else:
+                    data = {}
             elif isinstance(body, dict):
+                # If body is already a dict, use it directly
                 data = body
             else:
                 data = {}
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError) as e:
+            # Log the error for debugging
+            print(f"Error parsing request body: {e}, body type: {type(body)}, body: {str(body)[:200]}")
             data = {}
         
         # Check if file is provided
@@ -130,10 +138,17 @@ def handler(request):
     except Exception as e:
         import traceback
         error_msg = str(e)
-        traceback.print_exc()
+        # Print full traceback for debugging
+        traceback_str = traceback.format_exc()
+        print(f"Error in PDF encryption: {error_msg}")
+        print(traceback_str)
         return {
             'statusCode': 500,
-            'headers': {'Content-Type': 'application/json'},
-            'body': json.dumps({'error': error_msg, 'type': type(e).__name__})
+            'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+            'body': json.dumps({
+                'error': error_msg, 
+                'type': type(e).__name__,
+                'traceback': traceback_str if os.environ.get('DEBUG', 'false').lower() == 'true' else None
+            })
         }
 
