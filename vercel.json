@@ -20,12 +20,6 @@
       "src": "/(.*)",
       "dest": "/$1"
     }
-  ],
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
-    }
   ]
 }
 
