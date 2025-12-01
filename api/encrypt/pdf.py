@@ -16,7 +16,23 @@ from encrypt_api import DEFAULT_SECRET_KEY
 
 def handler(request):
     """Handle PDF encryption request - Vercel serverless function format"""
+    # Add logging at the very start to debug
+    print(f"Handler called with request type: {type(request)}")
+    if isinstance(request, dict):
+        print(f"Request keys: {list(request.keys())}")
+        print(f"Request method: {request.get('method', 'N/A')}")
+        print(f"Request body type: {type(request.get('body', None))}")
+        print(f"Request body preview: {str(request.get('body', ''))[:100]}")
+    
     try:
+        # Handle case where request might not be a dict (Vercel might pass it differently)
+        if not isinstance(request, dict):
+            return {
+                'statusCode': 500,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': f'Invalid request format. Expected dict, got {type(request).__name__}'})
+            }
+        
         # Parse request - Vercel Python format
         # Request object has: method, path, headers, body, query
         method = request.get('method', 'GET')
@@ -150,17 +166,30 @@ def handler(request):
     except Exception as e:
         import traceback
         error_msg = str(e)
-        # Print full traceback for debugging
+        # Print full traceback for debugging - always print in serverless
         traceback_str = traceback.format_exc()
-        print(f"Error in PDF encryption: {error_msg}")
-        print(traceback_str)
+        print(f"ERROR in PDF encryption: {error_msg}")
+        print(f"Full traceback:\n{traceback_str}")
+        
+        # Return error with traceback for debugging
+        error_response = {
+            'error': error_msg,
+            'type': type(e).__name__,
+        }
+        
+        # Include traceback in response for debugging (helpful for Vercel logs)
+        DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'
+        if DEBUG:
+            error_response['traceback'] = traceback_str
+        
         return {
             'statusCode': 500,
-            'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
-            'body': json.dumps({
-                'error': error_msg, 
-                'type': type(e).__name__,
-                'traceback': traceback_str if os.environ.get('DEBUG', 'false').lower() == 'true' else None
-            })
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type'
+            },
+            'body': json.dumps(error_response)
         }
 
