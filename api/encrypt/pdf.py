@@ -3,6 +3,7 @@ Vercel serverless function for PDF encryption endpoint
 Vercel Python runtime format
 
 IMPORTANT: Keep imports minimal at module level to avoid Vercel handler detection issues
+Vercel expects a simple function handler, not a class-based handler
 """
 import sys
 import os
@@ -18,12 +19,9 @@ try:
 except (ValueError, TypeError):
     DEFAULT_SECRET_KEY = 29202393
 
-# Add parent directory to path - do this inside handler to avoid import issues at module load
-# parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# sys.path.insert(0, parent_dir)
-
 # Vercel Python functions need the handler to be exported at module level
 # The function signature should match Vercel's expected format: handler(request)
+# This must be a simple function, not a class method
 def handler(request):
     """Handle PDF encryption request - Vercel serverless function format"""
     # Add parent directory to path inside handler to avoid Vercel detection issues
