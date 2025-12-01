@@ -12,7 +12,9 @@ import base64
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, parent_dir)
 
-from encrypt_api import DEFAULT_SECRET_KEY
+# Define DEFAULT_SECRET_KEY directly to avoid importing Flask and other heavy dependencies
+# This matches the value from encrypt_api.py
+DEFAULT_SECRET_KEY = int(os.environ.get('DEFAULT_SECRET_KEY', '29202393'))
 
 def handler(request):
     """Handle PDF encryption request - Vercel serverless function format"""
@@ -103,15 +105,43 @@ def handler(request):
                     'body': json.dumps({'error': 'secret_key must be an integer'})
                 }
         
-        # Import PDF processing
+        # Import PDF processing - do this inside the try block to catch all errors
+        # These imports might fail if dependencies aren't available
+        print("Starting PDF processing imports...")
         try:
+            print("Importing fitz (PyMuPDF)...")
             import fitz  # PyMuPDF
-            from EncTestNewTestF import redact_and_overwrite
+            print("fitz imported successfully")
         except ImportError as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"ERROR importing fitz: {e}\n{error_trace}")
             return {
                 'statusCode': 500,
-                'headers': {'Content-Type': 'application/json'},
-                'body': json.dumps({'error': f'PDF processing library not available: {str(e)}'})
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({
+                    'error': f'PyMuPDF (fitz) not available: {str(e)}. Make sure PyMuPDF==1.24.0 is in requirements.txt',
+                    'traceback': error_trace
+                })
+            }
+        
+        try:
+            print("Importing EncTestNewTestF...")
+            from EncTestNewTestF import redact_and_overwrite
+            print("EncTestNewTestF imported successfully")
+        except Exception as e:  # Catch all exceptions, not just ImportError
+            import traceback
+            traceback_str = traceback.format_exc()
+            print(f"ERROR importing EncTestNewTestF: {e}")
+            print(f"Full traceback:\n{traceback_str}")
+            return {
+                'statusCode': 500,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({
+                    'error': f'Failed to import PDF encryption module: {str(e)}',
+                    'type': type(e).__name__,
+                    'traceback': traceback_str
+                })
             }
         
         # Save uploaded file temporarily
