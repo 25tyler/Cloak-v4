@@ -46,19 +46,31 @@ def handler(request):
                 data = {}
         except (json.JSONDecodeError, TypeError) as e:
             # Log the error for debugging
-            print(f"Error parsing request body: {e}, body type: {type(body)}, body: {str(body)[:200]}")
-            data = {}
+            error_msg = f"Error parsing request body: {e}, body type: {type(body)}, body preview: {str(body)[:200]}"
+            print(error_msg)
+            return {
+                'statusCode': 400,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': error_msg})
+            }
         
         # Check if file is provided
         if 'file' not in data:
             return {
                 'statusCode': 400,
-                'headers': {'Content-Type': 'application/json'},
-                'body': json.dumps({'error': 'No file provided'})
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': 'No file provided', 'received_keys': list(data.keys())})
             }
         
         # Get file data (base64 encoded)
-        file_data = base64.b64decode(data['file'])
+        try:
+            file_data = base64.b64decode(data['file'])
+        except Exception as e:
+            return {
+                'statusCode': 400,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': f'Invalid base64 file data: {str(e)}'})
+            }
         filename = data.get('filename', 'document.pdf')
         
         # Get secret key
