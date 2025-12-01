@@ -1,5 +1,6 @@
 """
 Vercel serverless function for PDF encryption endpoint
+Vercel Python runtime format
 """
 import sys
 import os
@@ -13,11 +14,12 @@ sys.path.insert(0, parent_dir)
 
 from encrypt_api import DEFAULT_SECRET_KEY
 
-def handler(req):
+def handler(request):
     """Handle PDF encryption request - Vercel serverless function format"""
     try:
-        # Parse request - Vercel format
-        method = req.get('method', 'GET')
+        # Parse request - Vercel Python format
+        # Request object has: method, path, headers, body, query
+        method = request.get('method', 'GET')
         if method != 'POST':
             return {
                 'statusCode': 405,
@@ -25,16 +27,18 @@ def handler(req):
                 'body': json.dumps({'error': 'Method not allowed'})
             }
         
-        # Get body from request
-        body = req.get('body', '')
+        # Get body from request (Vercel passes body as string or dict)
+        body = request.get('body', '')
         
         # Parse JSON body
         try:
             if isinstance(body, str):
-                data = json.loads(body)
+                data = json.loads(body) if body else {}
+            elif isinstance(body, dict):
+                data = body
             else:
-                data = body if body else {}
-        except:
+                data = {}
+        except json.JSONDecodeError:
             data = {}
         
         # Check if file is provided
