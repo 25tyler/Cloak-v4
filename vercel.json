@@ -6,7 +6,7 @@
   "routes": [
     {
       "src": "/api/encrypt/pdf",
-      "dest": "/api/encrypt/pdf.py"
+      "dest": "/api/encrypt/pdf"
     },
     {
       "src": "/api/(.*)",
