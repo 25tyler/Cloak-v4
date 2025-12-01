@@ -1,6 +1,8 @@
 """
 Vercel serverless function for PDF encryption endpoint
 Vercel Python runtime format
+
+IMPORTANT: Keep imports minimal at module level to avoid Vercel handler detection issues
 """
 import sys
 import os
@@ -8,16 +10,27 @@ import json
 import tempfile
 import base64
 
-# Add parent directory to path to import modules
-parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, parent_dir)
-
 # Define DEFAULT_SECRET_KEY directly to avoid importing Flask and other heavy dependencies
 # This matches the value from encrypt_api.py
-DEFAULT_SECRET_KEY = int(os.environ.get('DEFAULT_SECRET_KEY', '29202393'))
+# Do this at module level but keep it simple
+try:
+    DEFAULT_SECRET_KEY = int(os.environ.get('DEFAULT_SECRET_KEY', '29202393'))
+except (ValueError, TypeError):
+    DEFAULT_SECRET_KEY = 29202393
 
+# Add parent directory to path - do this inside handler to avoid import issues at module load
+# parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# sys.path.insert(0, parent_dir)
+
+# Vercel Python functions need the handler to be exported at module level
+# The function signature should match Vercel's expected format: handler(request)
 def handler(request):
     """Handle PDF encryption request - Vercel serverless function format"""
+    # Add parent directory to path inside handler to avoid Vercel detection issues
+    parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    
     # Add logging at the very start to debug
     print(f"Handler called with request type: {type(request)}")
     if isinstance(request, dict):
