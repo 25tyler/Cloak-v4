@@ -13,8 +13,16 @@ export async function processPDF(arrayBuffer, secretKey = null) {
     const apiEndpoint = API_URL ? `${API_URL}/api/encrypt/pdf` : '/api/encrypt/pdf'
     
     // Convert ArrayBuffer to base64 for Vercel serverless function
+    // Process in chunks to avoid "Maximum call stack size exceeded" error
     const uint8Array = new Uint8Array(arrayBuffer)
-    const binaryString = String.fromCharCode.apply(null, uint8Array)
+    const chunkSize = 8192 // Process 8KB at a time
+    let binaryString = ''
+    
+    for (let i = 0; i < uint8Array.length; i += chunkSize) {
+      const chunk = uint8Array.slice(i, i + chunkSize)
+      binaryString += String.fromCharCode.apply(null, chunk)
+    }
+    
     const base64 = btoa(binaryString)
     
     // Create request body
@@ -46,10 +54,16 @@ export async function processPDF(arrayBuffer, secretKey = null) {
     const responseData = await response.text()
     
     // Decode base64 to ArrayBuffer
+    // Process in chunks to avoid stack overflow for large files
     const binaryString2 = atob(responseData)
     const bytes = new Uint8Array(binaryString2.length)
-    for (let i = 0; i < binaryString2.length; i++) {
-      bytes[i] = binaryString2.charCodeAt(i)
+    const decodeChunkSize = 8192
+    
+    for (let i = 0; i < binaryString2.length; i += decodeChunkSize) {
+      const end = Math.min(i + decodeChunkSize, binaryString2.length)
+      for (let j = i; j < end; j++) {
+        bytes[j] = binaryString2.charCodeAt(j)
+      }
     }
     
     return bytes.buffer
