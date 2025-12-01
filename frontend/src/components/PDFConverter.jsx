@@ -15,6 +15,15 @@ export default function PDFConverter() {
   const onDrop = useCallback((acceptedFiles) => {
     const file = acceptedFiles[0]
     if (file && file.type === 'application/pdf') {
+      // Check file size (3.4MB limit due to Vercel serverless function limits)
+      const MAX_FILE_SIZE = 3.4 * 1024 * 1024 // 3.4 MB
+      if (file.size > MAX_FILE_SIZE) {
+        const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2)
+        const maxSizeMB = (MAX_FILE_SIZE / (1024 * 1024)).toFixed(2)
+        setError(`File too large: ${fileSizeMB} MB. Maximum size is ${maxSizeMB} MB.`)
+        return
+      }
+      
       setInputFile(file)
       setError(null)
       setOutputFile(null)
