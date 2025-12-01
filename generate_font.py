@@ -412,7 +412,7 @@ def swap_glyphs_in_font(font, font_mapping_upper, font_mapping_lower, font_mappi
 
     return swaps_made
 
-def create_decryption_font_from_mappings(input_font_path, output_font_path, upper_map, lower_map, space_map):
+def create_decryption_font_from_mappings(input_font_path, output_font_path, upper_map, lower_map, space_map, preserve_font_family=None):
     """
     Create a decryption font using pre-computed unified mappings.
     This avoids recalculating mappings that were already computed during encryption.
@@ -423,6 +423,7 @@ def create_decryption_font_from_mappings(input_font_path, output_font_path, uppe
         upper_map: Dictionary mapping original -> encrypted for uppercase (from get_dynamic_mappings)
         lower_map: Dictionary mapping original -> encrypted for lowercase + space (from get_dynamic_mappings)
         space_map: Dictionary mapping original -> encrypted for special chars only (from get_dynamic_mappings)
+        preserve_font_family: Optional font family name to preserve (if None, uses 'EncryptedFont')
     """
     print(f"Loading font: {input_font_path}")
     font = TTFont(input_font_path)
@@ -488,10 +489,14 @@ def create_decryption_font_from_mappings(input_font_path, output_font_path, uppe
     # Update font family name
     if 'name' in font:
         name_table = font['name']
+        font_family_name = preserve_font_family if preserve_font_family else 'EncryptedFont'
         for record in name_table.names:
             if record.nameID == 1:  # Family name
-                record.string = 'EncryptedFont'  # Must match CONFIG.fontName in encrypt-page.js
-        print("Updated font family name to 'EncryptedFont'")
+                record.string = font_family_name
+        if preserve_font_family:
+            print(f"Preserved font family name: '{font_family_name}'")
+        else:
+            print("Updated font family name to 'EncryptedFont'")
     
     # Save as TTF first
     ttf_output = output_font_path.replace('.woff2', '.ttf')

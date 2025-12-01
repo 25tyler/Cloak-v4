@@ -255,19 +255,40 @@ def upload_font_to_r2(font_path: str, font_filename: str) -> str:
             traceback.print_exc()
         return None
 
-def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, space_map, base_url: str = None):
+def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, space_map, base_url: str = None, base_font_path: str = None, font_family: str = None, font_weight: str = None, font_style: str = None):
     """
     Create (or reuse) the decryption font for a secret_key + nonce pair and return its filename + URL.
     Automatically uploads to Cloudflare R2 if configured.
+    
+    Args:
+        secret_key: Secret key for encryption
+        nonce: Nonce for encryption
+        upper_map: Upper case character mapping
+        lower_map: Lower case character mapping
+        space_map: Space/special character mapping
+        base_url: Base URL for font URLs
+        base_font_path: Optional path to base font file (if None, uses Supertest.ttf)
+        font_family: Optional font family name (for unique font filename)
+        font_weight: Optional font weight (for unique font filename)
+        font_style: Optional font style (for unique font filename)
     """
     fallback_url = os.environ.get('FONT_URL', 'https://your-cdn.com/fonts/encrypted.woff2')
-    base_font_path = os.path.join(os.path.dirname(__file__), 'Supertest.ttf')
+    if base_font_path is None:
+        base_font_path = os.path.join(os.path.dirname(__file__), 'Supertest.ttf')
     fonts_dir = os.path.join(os.path.dirname(__file__), 'fonts')
     os.makedirs(fonts_dir, exist_ok=True)
 
     # Add version to hash to force regeneration when mapping logic changes
     # Version 3: Fixed bijectivity to include space as target
-    font_hash = hashlib.md5(f"{secret_key}_{nonce}_v3".encode('utf-8')).hexdigest()[:12]
+    # Include font family, weight, and style in hash for unique fonts
+    hash_input = f"{secret_key}_{nonce}_v3"
+    if font_family:
+        hash_input += f"_{font_family}"
+    if font_weight:
+        hash_input += f"_{font_weight}"
+    if font_style:
+        hash_input += f"_{font_style}"
+    font_hash = hashlib.md5(hash_input.encode('utf-8')).hexdigest()[:12]
     font_filename_woff2 = f"decryption_{font_hash}.woff2"
     font_filename_ttf = f"decryption_{font_hash}.ttf"
     font_path_woff2 = os.path.join(fonts_dir, font_filename_woff2)
@@ -280,20 +301,39 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
 
     try:
         font_was_generated = False
+        font_filename = None
+        font_path = None
         # Always regenerate fonts to ensure they're correct (in case mapping logic changed)
         # This ensures we don't use old fonts with incorrect mappings
         if DEBUG_MODE:
             print(f"Generating decryption font: {font_filename_woff2}")
         # Try to generate WOFF2, but fall back to TTF if it fails
-        result = create_decryption_font_from_mappings(base_font_path, font_path_woff2, upper_map, lower_map, space_map)
-        if result == True:
-            font_filename = font_filename_woff2
-            font_path = font_path_woff2
-        else:
-            # WOFF2 generation failed, use TTF
-            font_filename = font_filename_ttf
-            font_path = font_path_ttf
-        font_was_generated = True
+        # Pass font_family to preserve original font-family name
+        try:
+            result = create_decryption_font_from_mappings(base_font_path, font_path_woff2, upper_map, lower_map, space_map, preserve_font_family=font_family)
+            if result == True:
+                font_filename = font_filename_woff2
+                font_path = font_path_woff2
+                font_was_generated = True
+        except Exception as woff2_error:
+            # WOFF2 generation failed (e.g., brotli missing), try TTF fallback
+            if DEBUG_MODE:
+                print(f"⚠️  WOFF2 generation failed: {woff2_error}, trying TTF fallback...")
+            try:
+                result = create_decryption_font_from_mappings(base_font_path, font_path_ttf, upper_map, lower_map, space_map, preserve_font_family=font_family)
+                if result == True:
+                    font_filename = font_filename_ttf
+                    font_path = font_path_ttf
+                    font_was_generated = True
+                    if DEBUG_MODE:
+                        print(f"✅ TTF fallback successful: {font_filename}")
+                else:
+                    if DEBUG_MODE:
+                        print(f"⚠️  TTF generation also failed")
+            except Exception as ttf_error:
+                if DEBUG_MODE:
+                    print(f"⚠️  TTF generation failed: {ttf_error}")
+                # Both failed, will use fallback URL
         
         # Check if we should use R2
         use_r2 = os.environ.get('USE_R2_FONTS', 'false').lower() == 'true'
@@ -362,12 +402,19 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
         
     except Exception as e:
         if DEBUG_MODE:
-            print(f"Error generating font {font_filename}: {e}")
+            error_font_name = font_filename if 'font_filename' in locals() else 'unknown'
+            print(f"Error generating font {error_font_name}: {e}")
             import traceback
             traceback.print_exc()
-        return font_filename, fallback_url
+        return font_filename if 'font_filename' in locals() else None, fallback_url
 
-    # Return local URL if R2 upload not used
+    # Return local URL if font was generated but R2 upload not used
+    if not font_was_generated:
+        # Font generation failed, return fallback
+        if DEBUG_MODE:
+            print(f"⚠️  Font generation failed, using fallback URL")
+        return font_filename if 'font_filename' in locals() else None, fallback_url
+    
     # Try base_url, then BASE_URL env var, then request.url_root (if in request context)
     if base_url:
         resolved_base = base_url
@@ -376,19 +423,465 @@ def generate_font_artifacts(secret_key: int, nonce: int, upper_map, lower_map, s
     elif has_request_context():
         resolved_base = request.url_root.rstrip('/')
     else:
-        resolved_base = None
+        # Default to API server URL (port 5001) to ensure proxy works
+        api_port = os.environ.get('PORT', '5001')
+        resolved_base = f"http://localhost:{api_port}"
+        if DEBUG_MODE:
+            print(f"⚠️ No base_url found, defaulting to API server: {resolved_base}")
     
-    if resolved_base:
-        # Use direct /fonts/ endpoint for local fonts (not /proxy-font/)
+    if resolved_base and font_filename:
+        # Use proxy-font endpoint to avoid CORS issues
         # Add cache-busting timestamp to force browser to reload font
         import time
         cache_buster = int(time.time())
-        font_url = f"{resolved_base.rstrip('/')}/fonts/{font_filename}?v={cache_buster}"
+        font_url = f"{resolved_base.rstrip('/')}/proxy-font/{font_filename}?v={cache_buster}"
+        if DEBUG_MODE:
+            print(f"✅ Generated font URL: {font_url}")
     else:
+        if DEBUG_MODE:
+            print(f"⚠️  No resolved_base or font_filename, using fallback URL")
         font_url = fallback_url
     if DEBUG_MODE:
         print(f"Using local font URL: {font_url}")
     return font_filename, font_url
+
+# ============================================================================
+# FONT EXTRACTION AND DOWNLOAD FUNCTIONS
+# ============================================================================
+
+def extract_fonts_from_html(soup, base_url: str = None):
+    """
+    Extract all fonts from HTML by parsing @font-face rules and <link> tags.
+    
+    Args:
+        soup: BeautifulSoup object
+        base_url: Base URL for resolving relative URLs
+    
+    Returns:
+        List of font definitions: [{
+            'url': str,           # Font file URL
+            'family': str,         # Font family name
+            'weight': str,         # Font weight (e.g., 'normal', 'bold', '400', '700')
+            'style': str,          # Font style (e.g., 'normal', 'italic')
+            'source_type': str,    # 'fontface' or 'link'
+            'original_rule': str   # Original CSS rule or link href for replacement
+        }]
+    """
+    fonts = []
+    
+    # Extract from @font-face rules in <style> tags
+    for style_tag in soup.find_all('style'):
+        if not style_tag.string:
+            continue
+        
+        css_content = style_tag.string
+        
+        # Parse @font-face rules using regex
+        # Match: @font-face { ... }
+        fontface_pattern = r'@font-face\s*\{([^}]+)\}'
+        matches = re.finditer(fontface_pattern, css_content, re.IGNORECASE | re.DOTALL)
+        
+        for match in matches:
+            font_rule = match.group(1)
+            font_info = {}
+            
+            # Extract font-family
+            family_match = re.search(r'font-family\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+            if family_match:
+                # Remove quotes and whitespace
+                family = family_match.group(1).strip().strip("'\"")
+                font_info['family'] = family
+            
+            # Extract font-weight
+            weight_match = re.search(r'font-weight\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+            if weight_match:
+                font_info['weight'] = weight_match.group(1).strip()
+            else:
+                font_info['weight'] = 'normal'
+            
+            # Extract font-style
+            style_match = re.search(r'font-style\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+            if style_match:
+                font_info['style'] = style_match.group(1).strip()
+            else:
+                font_info['style'] = 'normal'
+            
+            # Extract src URLs
+            src_match = re.search(r'src\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+            if src_match:
+                src_value = src_match.group(1).strip()
+                # Extract URLs from src (can have multiple: url(...), url(...))
+                url_pattern = r'url\s*\(\s*([^)]+)\s*\)'
+                url_matches = re.finditer(url_pattern, src_value, re.IGNORECASE)
+                
+                for url_match in url_matches:
+                    url = url_match.group(1).strip().strip("'\"")
+                    
+                    # Check if it's a font file
+                    font_extensions = ['.woff2', '.woff', '.ttf', '.otf', '.eot']
+                    if any(url.lower().endswith(ext) for ext in font_extensions):
+                        # Resolve relative URLs
+                        if base_url and not url.startswith(('http://', 'https://', '//', 'data:')):
+                            from urllib.parse import urljoin
+                            url = urljoin(base_url, url)
+                        
+                        font_info_copy = font_info.copy()
+                        font_info_copy['url'] = url
+                        font_info_copy['source_type'] = 'fontface'
+                        font_info_copy['original_rule'] = match.group(0)  # Full @font-face rule
+                        fonts.append(font_info_copy)
+    
+    # Extract from <link> tags
+    for link_tag in soup.find_all('link'):
+        href = link_tag.get('href', '')
+        rel = link_tag.get('rel', [])
+        
+        # Check if it's a stylesheet or font file
+        is_stylesheet = 'stylesheet' in rel or any(rel_item == 'stylesheet' for rel_item in rel if isinstance(rel_item, str))
+        is_font_file = any(href.lower().endswith(ext) for ext in ['.woff2', '.woff', '.ttf', '.otf', '.eot'])
+        
+        if is_font_file or (is_stylesheet and any(href.lower().endswith(ext) for ext in ['.woff2', '.woff', '.ttf', '.otf', '.eot'])):
+            # Resolve relative URLs
+            if base_url and not href.startswith(('http://', 'https://', '//', 'data:')):
+                from urllib.parse import urljoin
+                href = urljoin(base_url, href)
+            
+            # Try to extract font-family from data attributes or infer from filename
+            family = link_tag.get('data-font-family', '')
+            if not family:
+                # Try to infer from class or id
+                family = link_tag.get('class', [''])[0] if link_tag.get('class') else ''
+                if not family:
+                    family = link_tag.get('id', '')
+            
+            fonts.append({
+                'url': href,
+                'family': family or 'Unknown',
+                'weight': link_tag.get('data-font-weight', 'normal'),
+                'style': link_tag.get('data-font-style', 'normal'),
+                'source_type': 'link',
+                'original_rule': href  # Original href for replacement
+            })
+        
+        # Check if it's a CSS file that might contain @font-face rules
+        # Use a flexible heuristic: check if URL contains 'font' (case-insensitive) or process all CSS
+        # This is more flexible than hardcoding domains but still efficient
+        elif is_stylesheet:
+            # Heuristic: check if URL likely contains fonts (contains 'font' in path)
+            # This catches patterns like: /fonts/css/, /font/, font.css, etc.
+            href_lower = href.lower()
+            likely_font_css = 'font' in href_lower or 'fonts' in href_lower
+            
+            # If it doesn't look like a font CSS file, skip it to avoid processing all CSS files
+            # This maintains efficiency while being more flexible than hardcoded domains
+            if not likely_font_css:
+                if DEBUG_MODE:
+                    print(f"⏭️  Skipping non-font CSS: {href}")
+                continue
+            
+            # This is a CSS file that might contain @font-face rules
+            # Download and parse it to extract fonts
+            if base_url and not href.startswith(('http://', 'https://', '//', 'data:')):
+                from urllib.parse import urljoin
+                css_url = urljoin(base_url, href)
+            else:
+                css_url = href
+            
+            # Download and parse the CSS file
+            if DEBUG_MODE:
+                print(f"🔍 Processing potential font CSS: {css_url}")
+            css_content = download_css(css_url, base_url=base_url)
+            if css_content:
+                if DEBUG_MODE:
+                    print(f"✅ CSS downloaded successfully, checking for @font-face rules...")
+                # Check if CSS contains @font-face rules before processing
+                fontface_pattern = r'@font-face\s*\{([^}]+)\}'
+                matches = list(re.finditer(fontface_pattern, css_content, re.IGNORECASE | re.DOTALL))
+                
+                if DEBUG_MODE:
+                    print(f"📊 Found {len(matches)} @font-face rule(s) in CSS")
+                
+                # Only process if we found @font-face rules
+                if matches:
+                    # Parse @font-face rules from the CSS
+                    for match in matches:
+                        font_rule = match.group(1)
+                        font_info = {}
+                        
+                        # Extract font-family
+                        family_match = re.search(r'font-family\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+                        if family_match:
+                            family = family_match.group(1).strip().strip("'\"")
+                            font_info['family'] = family
+                        
+                        # Extract font-weight
+                        weight_match = re.search(r'font-weight\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+                        if weight_match:
+                            font_info['weight'] = weight_match.group(1).strip()
+                        else:
+                            font_info['weight'] = 'normal'
+                        
+                        # Extract font-style
+                        style_match = re.search(r'font-style\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+                        if style_match:
+                            font_info['style'] = style_match.group(1).strip()
+                        else:
+                            font_info['style'] = 'normal'
+                        
+                        # Extract src URLs
+                        src_match = re.search(r'src\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+                        if src_match:
+                            src_value = src_match.group(1).strip()
+                            # Extract URLs from src (can have multiple: url(...), url(...))
+                            url_pattern = r'url\s*\(\s*([^)]+)\s*\)'
+                            url_matches = re.finditer(url_pattern, src_value, re.IGNORECASE)
+                            
+                            for url_match in url_matches:
+                                url = url_match.group(1).strip().strip("'\"")
+                                
+                                # Check if it's a font file
+                                font_extensions = ['.woff2', '.woff', '.ttf', '.otf', '.eot']
+                                if any(url.lower().endswith(ext) for ext in font_extensions):
+                                    # Resolve relative URLs (relative to CSS file location)
+                                    from urllib.parse import urljoin
+                                    css_base = '/'.join(css_url.split('/')[:-1]) + '/' if '/' in css_url else css_url
+                                    resolved_url = urljoin(css_base, url)
+                                    
+                                    font_info_copy = font_info.copy()
+                                    font_info_copy['url'] = resolved_url
+                                    font_info_copy['source_type'] = 'css'
+                                    font_info_copy['original_rule'] = match.group(0)  # Full @font-face rule
+                                    font_info_copy['css_url'] = css_url  # Store CSS URL for later replacement
+                                    fonts.append(font_info_copy)
+                    
+                    # Mark this link for CSS processing (so we can replace it with inline style later)
+                    link_tag['data-encrypt-css'] = 'true'
+                    link_tag['data-css-url'] = css_url
+                    if DEBUG_MODE:
+                        print(f"📄 Extracted {len([f for f in fonts if f.get('css_url') == css_url])} fonts from CSS: {css_url}")
+    
+    return fonts
+
+def download_css(url: str, base_url: str = None):
+    """
+    Download a CSS file from a URL.
+    
+    Args:
+        url: CSS file URL (can be relative or absolute)
+        base_url: Base URL for resolving relative URLs
+    
+    Returns:
+        CSS content as string if successful, None if failed
+    """
+    try:
+        import requests
+        from urllib.parse import urljoin
+    except ImportError:
+        if DEBUG_MODE:
+            print(f"⚠️  requests library not available, cannot download CSS: {url}")
+        return None
+    
+    # Resolve relative URLs
+    if base_url and not url.startswith(('http://', 'https://', '//', 'data:')):
+        url = urljoin(base_url, url)
+    
+    # Skip data URLs
+    if url.startswith('data:'):
+        if DEBUG_MODE:
+            print(f"⚠️  Skipping data URL CSS: {url[:50]}...")
+        return None
+    
+    # Download CSS
+    try:
+        if DEBUG_MODE:
+            print(f"Downloading CSS from: {url}")
+        response = requests.get(url, timeout=120, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        response.raise_for_status()
+        
+        css_content = response.text
+        if DEBUG_MODE:
+            print(f"✅ CSS downloaded: {len(css_content)} bytes")
+        return css_content
+    
+    except Exception as e:
+        if DEBUG_MODE:
+            print(f"⚠️  Failed to download CSS from {url}: {e}")
+        return None
+
+def download_font(url: str, base_url: str = None, temp_dir: str = None):
+    """
+    Download a font file from a URL.
+    
+    Args:
+        url: Font file URL (can be relative or absolute)
+        base_url: Base URL for resolving relative URLs
+        temp_dir: Directory to save downloaded fonts (default: fonts/downloaded/)
+    
+    Returns:
+        Local file path if successful, None if failed
+    """
+    try:
+        import requests
+        from urllib.parse import urljoin, urlparse
+    except ImportError:
+        if DEBUG_MODE:
+            print(f"⚠️  requests library not available, cannot download font: {url}")
+        return None
+    
+    # Resolve relative URLs
+    if base_url and not url.startswith(('http://', 'https://', '//', 'data:')):
+        url = urljoin(base_url, url)
+    
+    # Skip data URLs
+    if url.startswith('data:'):
+        if DEBUG_MODE:
+            print(f"⚠️  Skipping data URL font: {url[:50]}...")
+        return None
+    
+    # Create temp directory
+    if temp_dir is None:
+        fonts_dir = os.path.join(os.path.dirname(__file__), 'fonts')
+        temp_dir = os.path.join(fonts_dir, 'downloaded')
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Generate filename from URL
+    parsed_url = urlparse(url)
+    filename = os.path.basename(parsed_url.path)
+    if not filename or '.' not in filename:
+        # Generate filename from URL hash
+        url_hash = hashlib.md5(url.encode('utf-8')).hexdigest()[:12]
+        filename = f"font_{url_hash}.woff2"
+    
+    local_path = os.path.join(temp_dir, filename)
+    
+    # Check if already downloaded
+    if os.path.exists(local_path):
+        if DEBUG_MODE:
+            print(f"✅ Font already downloaded: {filename}")
+        return local_path
+    
+    # Download font
+    try:
+        if DEBUG_MODE:
+            print(f"Downloading font from: {url}")
+        response = requests.get(url, timeout=120, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        response.raise_for_status()
+        
+        # Save to file
+        with open(local_path, 'wb') as f:
+            f.write(response.content)
+        
+        if DEBUG_MODE:
+            print(f"✅ Font downloaded: {filename} ({len(response.content)} bytes)")
+        return local_path
+    
+    except Exception as e:
+        if DEBUG_MODE:
+            print(f"⚠️  Failed to download font from {url}: {e}")
+        return None
+
+def encrypt_fonts_from_html(soup, secret_key: int, nonce: int, upper_map, lower_map, space_map, base_url: str = None):
+    """
+    Extract fonts from HTML, download them, and generate encrypted versions.
+    
+    Args:
+        soup: BeautifulSoup object
+        secret_key: Secret key for encryption
+        nonce: Nonce for encryption
+        upper_map: Upper case character mapping
+        lower_map: Lower case character mapping
+        space_map: Space/special character mapping
+        base_url: Base URL for resolving relative URLs and generating font URLs
+    
+    Returns:
+        Dictionary mapping original font info to encrypted font URL:
+        {
+            (family, weight, style, url): encrypted_font_url,
+            ...
+        }
+    """
+    font_mapping = {}
+    
+    # Extract fonts from HTML
+    fonts = extract_fonts_from_html(soup, base_url=base_url)
+    
+    if not fonts:
+        if DEBUG_MODE:
+            print("No fonts found in HTML")
+        return font_mapping
+    
+    if DEBUG_MODE:
+        print(f"Found {len(fonts)} font(s) in HTML")
+    
+    # Process each font
+    for font_info in fonts:
+        url = font_info.get('url')
+        family = font_info.get('family', 'Unknown')
+        weight = font_info.get('weight', 'normal')
+        style = font_info.get('style', 'normal')
+        
+        if not url:
+            if DEBUG_MODE:
+                print(f"⚠️  Skipping font with no URL: {family}")
+            continue
+        
+        # Resolve URL to absolute URL for consistent matching
+        # The URL from extract_fonts_from_html is already resolved, but let's ensure it's absolute
+        resolved_url = url
+        if base_url and not url.startswith(('http://', 'https://', '//', 'data:')):
+            from urllib.parse import urljoin
+            resolved_url = urljoin(base_url, url)
+        
+        if DEBUG_MODE:
+            print(f"📥 Processing font: {family} ({weight}, {style}) from {resolved_url}")
+        
+        # Download font
+        local_font_path = download_font(resolved_url, base_url=base_url)
+        if not local_font_path:
+            if DEBUG_MODE:
+                print(f"⚠️  Failed to download font: {resolved_url}")
+            continue
+        
+        # Generate encrypted font
+        try:
+            encrypted_font_filename, encrypted_font_url = generate_font_artifacts(
+                secret_key=secret_key,
+                nonce=nonce,
+                upper_map=upper_map,
+                lower_map=lower_map,
+                space_map=space_map,
+                base_url=base_url,
+                base_font_path=local_font_path,
+                font_family=family,
+                font_weight=weight,
+                font_style=style
+            )
+            
+            # Create mapping key using resolved URL for consistent matching
+            mapping_key = (family, weight, style, resolved_url)
+            font_mapping[mapping_key] = {
+                'url': encrypted_font_url,
+                'filename': encrypted_font_filename,
+                'family': family,
+                'weight': weight,
+                'style': style
+            }
+            
+            if DEBUG_MODE:
+                print(f"✅ Encrypted font generated: {family} ({weight}, {style}) -> {encrypted_font_filename}, URL: {encrypted_font_url}")
+        
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"⚠️  Failed to generate encrypted font for {family}: {e}")
+                import traceback
+                traceback.print_exc()
+            continue
+    
+    return font_mapping
 
 # ============================================================================
 # HTML ENCRYPTION FUNCTIONS
@@ -498,12 +991,13 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
         base_url: Base URL for font generation
     
     Returns:
-        tuple: (soup, text_mapping, nonce, font_url, space_char)
+        tuple: (soup, text_mapping, nonce, font_url, space_char, font_mapping)
         - soup: BeautifulSoup object with encrypted text
         - text_mapping: dict mapping original_text -> encrypted_text
         - nonce: Nonce used for encryption
-        - font_url: URL to the decryption font
+        - font_url: URL to the decryption font (primary font URL)
         - space_char: Character that space encrypts to
+        - font_mapping: dict mapping (family, weight, style, url) -> encrypted font info
     """
     if not BS4_AVAILABLE:
         raise ImportError("beautifulsoup4 is required for HTML encryption. Install with: pip install beautifulsoup4")
@@ -516,6 +1010,7 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
     # Extract all visible text nodes
     # CRITICAL: Preserve leading and trailing spaces to maintain spacing around links
     text_nodes = []
+    whitespace_only_nodes = []  # Track whitespace-only nodes separately
     for element in soup.find_all(string=True):
         # Skip if parent is in skip list
         parent = element.parent
@@ -524,13 +1019,23 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
         
         # Get text content - preserve leading and trailing spaces
         original_text = str(element)
-        # Only process if there's non-whitespace content
+        # Process text nodes with non-whitespace content
         if original_text.strip() and len(original_text.strip()) > 0:
             text_nodes.append((element, original_text))
+        # Also track whitespace-only nodes (spaces between elements like links)
+        elif original_text.strip() == '' and len(original_text) > 0:
+            # Skip whitespace-only nodes that are direct children of structural tags
+            # (like whitespace between <html> and <head>, or <head> and <body>)
+            # These are structural whitespace and shouldn't be rendered
+            if parent and parent.name in {'html', 'head', 'body'}:
+                continue
+            # Only track whitespace nodes that are between content elements (like links)
+            whitespace_only_nodes.append((element, original_text))
     
     if len(text_nodes) == 0:
         # No text to encrypt, return empty mapping
-        return soup, {}, None, None, None
+        # Note: Fonts cannot be encrypted without text (no nonce to generate mappings)
+        return soup, {}, None, None, None, {}
     
     # Combine all text to calculate a single nonce for the entire page
     # Use stripped text for nonce calculation (spaces don't affect encryption mapping)
@@ -610,7 +1115,7 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
         # Create a container to hold all spans (like client-side script)
         # Use minimal styling to avoid breaking parent layouts (flexbox, grid, etc.)
         container = soup.new_tag('span')
-        container['style'] = 'display: inline; white-space: normal;'
+        container['style'] = 'display: inline; white-space: normal; height: auto;'
         
         # Check if container will start on a new line by checking the element's position
         # The container will start on a new line if:
@@ -803,12 +1308,36 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
         # This ensures spaces are inside the word span, so newlines happen after the space
         # (Works with dynamic layouts since spaces are part of the word span)
         total_spaces = trailing_spaces + leading_spaces_to_append
-        if total_spaces and space_char and last_word_span:
+        if total_spaces and space_char:
             trailing_space_count = len(total_spaces)
-            current_text = last_word_span.string or ''
-            last_word_span.string = current_text + (space_char * trailing_space_count)
+            if last_word_span:
+                # Append to existing word span
+                current_text = last_word_span.string or ''
+                last_word_span.string = current_text + (space_char * trailing_space_count)
+            else:
+                # No word span exists (shouldn't happen, but handle edge case)
+                # Create a span just for the spaces to ensure they're converted to space_char
+                space_span = soup.new_tag('span')
+                space_span['style'] = 'display: inline-block; white-space: nowrap;'
+                space_span.string = space_char * trailing_space_count
+                container.append(space_span)
         
         replacements.append((element, container))
+    
+    # Process whitespace-only text nodes (spaces between elements like links)
+    # These need to be converted to space_char spans to render correctly
+    for element, original_text in whitespace_only_nodes:
+        if space_char:
+            # Count the number of spaces in the whitespace-only node
+            space_count = len(original_text)
+            # Create a span with space_char repeated
+            space_span = soup.new_tag('span')
+            space_span['style'] = 'display: inline-block; white-space: nowrap;'
+            space_span.string = space_char * space_count
+            element.replace_with(space_span)
+        else:
+            # If space_char is None, remove the whitespace node (shouldn't happen)
+            element.extract()
     
     # Apply all replacements first
     for element, replacement in replacements:
@@ -826,6 +1355,24 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
         parent = container.parent
         if not parent:
             continue
+        
+        # Ensure container has height: auto !important
+        container_style = container.get('style', '')
+        if 'height: auto' not in container_style:
+            # Remove any existing height declarations
+            container_style = re.sub(r'height\s*:\s*[^;!]+(?:!important)?\s*;?', '', container_style)
+            container['style'] = container_style.rstrip('; ') + ('; ' if container_style.rstrip() else '') + 'height: auto !important;'
+        
+        # Ensure parent element and all ancestors have height: auto !important
+        current = parent
+        while current and hasattr(current, 'name'):
+            if current.name in block_elements or current.name in {'div', 'section', 'article', 'main', 'aside'}:
+                current_style = current.get('style', '')
+                if 'height: auto' not in current_style:
+                    # Remove any existing height declarations
+                    current_style = re.sub(r'height\s*:\s*[^;!]+(?:!important)?\s*;?', '', current_style)
+                    current['style'] = current_style.rstrip('; ') + ('; ' if current_style.rstrip() else '') + 'height: auto !important;'
+            current = getattr(current, 'parent', None)
             
         # Check if container is at start of a new line
         # This includes: first child of block element, after <br>, after block elements, or after whitespace-only content
@@ -902,15 +1449,288 @@ def encrypt_html_content(html_content: str, secret_key: int, base_url: str = Non
                 # If we get here, first child is not an 'O' span, so stop
                 break
     
-    # Generate font for this encryption
-    font_filename, font_url = generate_font_artifacts(
-        secret_key, nonce, upper_map, lower_map, space_map, base_url=base_url
+    # Encrypt fonts from HTML (extract, download, and generate encrypted versions)
+    font_mapping = encrypt_fonts_from_html(
+        soup, secret_key, nonce, upper_map, lower_map, space_map, base_url=base_url
     )
+    
+    if DEBUG_MODE:
+        print(f"🔍 Font mapping after encryption: {len(font_mapping)} fonts found")
+        for key, value in font_mapping.items():
+            print(f"   {key} -> {value['url']}")
+    
+    # Replace font URLs in @font-face rules
+    for style_tag in soup.find_all('style'):
+        if not style_tag.string:
+            continue
+        
+        css_content = style_tag.string
+        modified_css = css_content
+        
+        # Find all @font-face rules and replace URLs
+        fontface_pattern = r'@font-face\s*\{([^}]+)\}'
+        
+        def replace_font_url(match):
+            font_rule = match.group(1)
+            
+            # Extract font properties
+            family_match = re.search(r'font-family\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+            weight_match = re.search(r'font-weight\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+            style_match = re.search(r'font-style\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+            src_match = re.search(r'src\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+            
+            if not family_match or not src_match:
+                return match.group(0)  # Return unchanged
+            
+            family = family_match.group(1).strip().strip("'\"")
+            weight = weight_match.group(1).strip() if weight_match else 'normal'
+            style = style_match.group(1).strip() if style_match else 'normal'
+            src_value = src_match.group(1).strip()
+            
+            # Extract URLs from src
+            url_pattern = r'url\s*\(\s*([^)]+)\s*\)'
+            url_matches = list(re.finditer(url_pattern, src_value, re.IGNORECASE))
+            
+            if not url_matches:
+                return match.group(0)  # Return unchanged
+            
+            # Replace each URL
+            new_src_parts = []
+            for url_match in url_matches:
+                original_url = url_match.group(1).strip().strip("'\"")
+                
+                # Resolve relative URLs
+                resolved_url = original_url
+                if base_url and not original_url.startswith(('http://', 'https://', '//', 'data:')):
+                    from urllib.parse import urljoin
+                    resolved_url = urljoin(base_url, original_url)
+                
+                # Find matching encrypted font
+                # Try exact match first
+                encrypted_font = None
+                for (map_family, map_weight, map_style, map_url), font_data in font_mapping.items():
+                    if (map_family == family and 
+                        map_weight == weight and 
+                        map_style == style and 
+                        map_url == resolved_url):
+                        encrypted_font = font_data
+                        break
+                
+                # If no exact match, try matching by URL only (in case family/weight/style don't match exactly)
+                if not encrypted_font:
+                    for (map_family, map_weight, map_style, map_url), font_data in font_mapping.items():
+                        if map_url == resolved_url:
+                            encrypted_font = font_data
+                            if DEBUG_MODE:
+                                print(f"⚠️  Matched by URL only (family/weight/style may differ): {resolved_url}")
+                            break
+                
+                if encrypted_font:
+                    # Replace with encrypted font URL
+                    new_src_parts.append(f"url('{encrypted_font['url']}')")
+                    if DEBUG_MODE:
+                        print(f"✅ Replaced @font-face URL: {original_url} -> {encrypted_font['url']}")
+                else:
+                    # Keep original URL if no match found
+                    if DEBUG_MODE:
+                        print(f"⚠️  No encrypted font found for: family={family}, weight={weight}, style={style}, url={resolved_url}")
+                        print(f"   Available fonts in mapping:")
+                        for key, value in font_mapping.items():
+                            print(f"     {key} -> {value['url']}")
+                    new_src_parts.append(url_match.group(0))
+            
+            # Reconstruct @font-face rule with new URLs
+            new_src = ', '.join(new_src_parts)
+            new_font_rule = font_rule.replace(src_match.group(0), f"src: {new_src}")
+            return f"@font-face {{{new_font_rule}}}"
+        
+        modified_css = re.sub(fontface_pattern, replace_font_url, modified_css, flags=re.IGNORECASE | re.DOTALL)
+        
+        if modified_css != css_content:
+            style_tag.string = modified_css
+            if DEBUG_MODE:
+                print(f"✅ Modified CSS in style tag (before: {len(css_content)} chars, after: {len(modified_css)} chars)")
+        elif DEBUG_MODE:
+            print(f"⚠️  CSS was not modified - no font URLs replaced in this style tag")
+    
+    # Replace font URLs in <link> tags
+    for link_tag in soup.find_all('link'):
+        href = link_tag.get('href', '')
+        rel = link_tag.get('rel', [])
+        
+        # Check if it's a font file
+        is_font_file = any(href.lower().endswith(ext) for ext in ['.woff2', '.woff', '.ttf', '.otf', '.eot'])
+        
+        if is_font_file:
+            # Resolve relative URLs
+            resolved_href = href
+            if base_url and not href.startswith(('http://', 'https://', '//', 'data:')):
+                from urllib.parse import urljoin
+                resolved_href = urljoin(base_url, href)
+            
+            # Find matching encrypted font
+            family = link_tag.get('data-font-family', 'Unknown')
+            weight = link_tag.get('data-font-weight', 'normal')
+            style = link_tag.get('data-font-style', 'normal')
+            
+            encrypted_font = None
+            for (map_family, map_weight, map_style, map_url), font_data in font_mapping.items():
+                if map_url == resolved_href:
+                    encrypted_font = font_data
+                    break
+            
+            if encrypted_font:
+                # Replace href with encrypted font URL
+                link_tag['href'] = encrypted_font['url']
+                if DEBUG_MODE:
+                    print(f"✅ Replaced link font URL: {href} -> {encrypted_font['url']}")
+        
+        # Check if it's a CSS file from g1.nyt.com/fonts/css (or similar font CSS files)
+        elif link_tag.get('data-encrypt-css') == 'true':
+            css_url = link_tag.get('data-css-url', href)
+            if not css_url:
+                continue
+            
+            # Download and parse the CSS file
+            css_content = download_css(css_url, base_url=base_url)
+            if not css_content:
+                if DEBUG_MODE:
+                    print(f"⚠️  Failed to download CSS from {css_url}, skipping")
+                continue
+            
+            # Parse @font-face rules from the CSS and extract fonts
+            fontface_pattern = r'@font-face\s*\{([^}]+)\}'
+            matches = list(re.finditer(fontface_pattern, css_content, re.IGNORECASE | re.DOTALL))
+            
+            if not matches:
+                if DEBUG_MODE:
+                    print(f"⚠️  No @font-face rules found in CSS from {css_url}")
+                continue
+            
+            # Replace font URLs in the CSS
+            modified_css = css_content
+            
+            def replace_font_url_in_css(match):
+                font_rule = match.group(1)
+                
+                # Extract font properties
+                family_match = re.search(r'font-family\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+                weight_match = re.search(r'font-weight\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+                style_match = re.search(r'font-style\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+                src_match = re.search(r'src\s*:\s*([^;]+)', font_rule, re.IGNORECASE)
+                
+                if not family_match or not src_match:
+                    return match.group(0)  # Return unchanged
+                
+                family = family_match.group(1).strip().strip("'\"")
+                weight = weight_match.group(1).strip() if weight_match else 'normal'
+                style = style_match.group(1).strip() if style_match else 'normal'
+                src_value = src_match.group(1).strip()
+                
+                # Extract URLs from src
+                url_pattern = r'url\s*\(\s*([^)]+)\s*\)'
+                url_matches = list(re.finditer(url_pattern, src_value, re.IGNORECASE))
+                
+                if not url_matches:
+                    return match.group(0)  # Return unchanged
+                
+                # Replace each URL
+                new_src_parts = []
+                for url_match in url_matches:
+                    original_url = url_match.group(1).strip().strip("'\"")
+                    
+                    # Resolve relative URLs (relative to CSS file location)
+                    from urllib.parse import urljoin, urlparse
+                    css_base = '/'.join(css_url.split('/')[:-1]) + '/' if '/' in css_url else css_url
+                    resolved_url = urljoin(css_base, original_url)
+                    
+                    # Find matching encrypted font
+                    encrypted_font = None
+                    if DEBUG_MODE:
+                        print(f"🔍 Looking for match: family={family}, weight={weight}, style={style}, url={resolved_url}")
+                        print(f"   Font mapping has {len(font_mapping)} entries")
+                    
+                    for (map_family, map_weight, map_style, map_url), font_data in font_mapping.items():
+                        if (map_family == family and 
+                            map_weight == weight and 
+                            map_style == style and 
+                            map_url == resolved_url):
+                            encrypted_font = font_data
+                            if DEBUG_MODE:
+                                print(f"✅ Exact match found: {map_url}")
+                            break
+                    
+                    # If no exact match, try matching by URL only
+                    if not encrypted_font:
+                        for (map_family, map_weight, map_style, map_url), font_data in font_mapping.items():
+                            if map_url == resolved_url:
+                                encrypted_font = font_data
+                                if DEBUG_MODE:
+                                    print(f"⚠️  Matched CSS font by URL only: {resolved_url}")
+                                break
+                    
+                    # If still no match, try matching by normalized URL (handle trailing slashes, etc.)
+                    if not encrypted_font:
+                        normalized_resolved = resolved_url.rstrip('/')
+                        for (map_family, map_weight, map_style, map_url), font_data in font_mapping.items():
+                            normalized_map = map_url.rstrip('/')
+                            if normalized_map == normalized_resolved:
+                                encrypted_font = font_data
+                                if DEBUG_MODE:
+                                    print(f"⚠️  Matched CSS font by normalized URL: {resolved_url} == {map_url}")
+                                break
+                    
+                    if encrypted_font:
+                        # Replace with encrypted font URL
+                        new_src_parts.append(f"url('{encrypted_font['url']}')")
+                        if DEBUG_MODE:
+                            print(f"✅ Replaced CSS font URL: {original_url} -> {encrypted_font['url']}")
+                    else:
+                        # Keep original URL if no match found
+                        if DEBUG_MODE:
+                            print(f"⚠️  No encrypted font found for CSS font: family={family}, weight={weight}, style={style}, url={resolved_url}")
+                            if font_mapping:
+                                print(f"   Available mappings (first 3):")
+                                for i, ((mf, mw, ms, mu), fd) in enumerate(list(font_mapping.items())[:3]):
+                                    print(f"     {i+1}. family={mf}, weight={mw}, style={ms}, url={mu}")
+                        new_src_parts.append(url_match.group(0))
+                
+                # Reconstruct @font-face rule with new URLs
+                new_src = ', '.join(new_src_parts)
+                new_font_rule = font_rule.replace(src_match.group(0), f"src: {new_src}")
+                return f"@font-face {{{new_font_rule}}}"
+            
+            # Replace all @font-face rules in the CSS
+            modified_css = re.sub(fontface_pattern, replace_font_url_in_css, modified_css, flags=re.IGNORECASE | re.DOTALL)
+            
+            if modified_css != css_content:
+                # Replace the link tag with a style tag containing the modified CSS
+                style_tag = soup.new_tag('style')
+                style_tag['type'] = 'text/css'
+                style_tag.string = modified_css
+                link_tag.replace_with(style_tag)
+                if DEBUG_MODE:
+                    print(f"✅ Replaced CSS link with inline style: {css_url} (modified {len(matches)} @font-face rules)")
+            else:
+                if DEBUG_MODE:
+                    print(f"⚠️  CSS was not modified: {css_url}")
+    
+    # Get primary font URL for backward compatibility (use first font if available)
+    primary_font_url = None
+    if font_mapping:
+        first_font = list(font_mapping.values())[0]
+        primary_font_url = first_font['url']
+    else:
+        # Fallback: generate a default font if no fonts found in HTML
+        font_filename, font_url = generate_font_artifacts(
+            secret_key, nonce, upper_map, lower_map, space_map, base_url=base_url
+        )
+        primary_font_url = font_url
     
     # Get the character that space maps to (already retrieved above)
     # space_char is already available from the loop above
     
-    return soup, text_mapping, nonce, font_url, space_char
+    return soup, text_mapping, nonce, primary_font_url, space_char, font_mapping
 
 def encrypt_metadata(soup, text_mapping: dict, secret_key: int, nonce: int):
     """
@@ -1403,7 +2223,7 @@ def encrypt_html():
             base_url = f"http://localhost:{api_port}"
         
         # Encrypt HTML content
-        soup, text_mapping, nonce, font_url, space_char = encrypt_html_content(
+        soup, text_mapping, nonce, font_url, space_char, font_mapping = encrypt_html_content(
             html_content, secret_key, base_url=base_url
         )
         
@@ -1420,11 +2240,13 @@ def encrypt_html():
         stats = encrypt_metadata(soup, text_mapping, secret_key, nonce)
         
         # Inject font CSS into <head>
+        # Only inject global font override if no fonts were found in HTML
         head = soup.find('head')
         if head and font_url:
-            # Create style tag with font CSS
-            style_tag = soup.new_tag('style')
-            style_tag.string = f"""
+            if not font_mapping:
+                # No fonts found in HTML, use fallback font with global override
+                style_tag = soup.new_tag('style')
+                style_tag.string = f"""
 @font-face {{
     font-family: 'EncryptedFont';
     src: url('{font_url}') format('woff2');
@@ -1435,8 +2257,12 @@ body {{
     font-family: 'EncryptedFont', sans-serif;
 }}
 """
-            # Insert at the beginning of head
-            head.insert(0, style_tag)
+                # Insert at the beginning of head
+                head.insert(0, style_tag)
+            else:
+                # Fonts were found in HTML - they're already replaced in @font-face rules
+                # Don't inject global override - preserve original font-family names
+                pass
         
         # Convert back to HTML string
         encrypted_html = str(soup)
@@ -1662,7 +2488,7 @@ def nyt_encrypt():
             base_url = f"http://localhost:{api_port}"
         
         # Encrypt HTML content
-        soup, text_mapping, nonce, font_url, space_char = encrypt_html_content(
+        soup, text_mapping, nonce, font_url, space_char, font_mapping = encrypt_html_content(
             html_content, secret_key, base_url=base_url
         )
         
@@ -1696,21 +2522,25 @@ def nyt_encrypt():
                 script['src'] = nyt_base_url + src
         
         # Inject font CSS and preload link into <head>
+        # Only inject global font override if no fonts were found in HTML
         head = soup.find('head')
         if head and font_url:
-            # Add preload link for faster font loading
-            preload_link = soup.new_tag('link')
-            preload_link['rel'] = 'preload'
-            preload_link['as'] = 'font'
-            preload_link['type'] = 'font/woff2'
-            preload_link['crossorigin'] = 'anonymous'
-            preload_link['href'] = font_url
-            head.insert(0, preload_link)
-            
-            # Create style tag with font CSS
-            # Use !important to override any existing font-family rules
-            style_tag = soup.new_tag('style')
-            style_tag.string = f"""
+            # Check if fonts were found in HTML (font_mapping will have entries)
+            if not font_mapping:
+                # No fonts found in HTML, use fallback font with global override
+                # Add preload link for faster font loading
+                preload_link = soup.new_tag('link')
+                preload_link['rel'] = 'preload'
+                preload_link['as'] = 'font'
+                preload_link['type'] = 'font/woff2'
+                preload_link['crossorigin'] = 'anonymous'
+                preload_link['href'] = font_url
+                head.insert(0, preload_link)
+                
+                # Create style tag with font CSS
+                # Use !important to override any existing font-family rules
+                style_tag = soup.new_tag('style')
+                style_tag.string = f"""
 @font-face {{
     font-family: 'EncryptedFont';
     src: url('{font_url}') format('woff2');
@@ -1722,6 +2552,18 @@ def nyt_encrypt():
 html, body, body *, * {{
     font-family: 'EncryptedFont', sans-serif !important;
     text-rendering: optimizeLegibility !important;
+    height: auto !important;
+}}
+
+/* Override height for containers and companion columns */
+span[style*="white-space: normal"],
+span[style*="white-space: normal"] *,
+[class*="companion"],
+[class*="companion"] *,
+[class*="container"],
+[class*="container"] *,
+:has(span[style*="white-space: normal"]) {{
+    height: auto !important;
 }}
 
 /* Exclude search overlay from encrypted font */
@@ -1730,8 +2572,51 @@ html, body, body *, * {{
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
 }}
 """
-            # Insert style tag after preload
-            head.insert(1, style_tag)
+                # Insert style tag after preload
+                head.insert(1, style_tag)
+            else:
+                # Fonts were found in HTML - they're already replaced in @font-face rules
+                # Add preload links for all encrypted fonts to ensure they load quickly
+                for font_data in font_mapping.values():
+                    encrypted_font_url = font_data['url']
+                    if encrypted_font_url:
+                        preload_link = soup.new_tag('link')
+                        preload_link['rel'] = 'preload'
+                        preload_link['as'] = 'font'
+                        preload_link['type'] = 'font/woff2'
+                        preload_link['crossorigin'] = 'anonymous'
+                        preload_link['href'] = encrypted_font_url
+                        head.insert(0, preload_link)
+                        if DEBUG_MODE:
+                            print(f"📦 Added preload link for encrypted font: {encrypted_font_url}")
+                
+                # Don't inject global override - preserve original font-family names
+                # Just add a style for text rendering optimization
+                style_tag = soup.new_tag('style')
+                style_tag.string = """
+/* Optimize text rendering for encrypted fonts */
+body, body * {
+    text-rendering: optimizeLegibility !important;
+}
+
+/* Override height for containers and companion columns */
+span[style*="white-space: normal"],
+span[style*="white-space: normal"] *,
+[class*="companion"],
+[class*="companion"] *,
+[class*="container"],
+[class*="container"] *,
+:has(span[style*="white-space: normal"]) {
+    height: auto !important;
+}
+
+/* Exclude search overlay from encrypted font */
+#encrypted-search-overlay,
+#encrypted-search-overlay * {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+}
+"""
+                head.insert(0, style_tag)
         
         # Inject copy-paste interception script (same as client-side script)
         # This allows users to copy-paste normally while scrapers see encrypted text
@@ -2051,7 +2936,7 @@ def proxy_font(filename):
     
     try:
         # Try to fetch font from R2
-        response = requests.get(font_url, timeout=10)
+        response = requests.get(font_url, timeout=120)
         response.raise_for_status()
         
         # Return font with proper headers
@@ -2083,6 +2968,101 @@ def proxy_font(filename):
             if DEBUG_MODE:
                 print(f"Local font also not found: {local_font_path}")
             return jsonify({'error': f'Font not found locally or on R2: {filename}'}), 404
+
+@app.route('/api/encrypt/pdf', methods=['POST'])
+def encrypt_pdf():
+    """
+    Encrypt PDF file by replacing text with encrypted text using custom fonts.
+    
+    Request:
+        - Form data with 'file' field containing PDF file
+        - Optional 'secret_key' field (defaults to DEFAULT_SECRET_KEY)
+    
+    Response:
+        - Encrypted PDF file as binary data
+    """
+    try:
+        # Check if file is present
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # Check if file is PDF
+        if not file.filename.lower().endswith('.pdf'):
+            return jsonify({'error': 'File must be a PDF'}), 400
+        
+        # Get secret key
+        secret_key = request.form.get('secret_key')
+        if secret_key is None:
+            secret_key = DEFAULT_SECRET_KEY
+        else:
+            try:
+                secret_key = int(secret_key)
+            except (ValueError, TypeError):
+                return jsonify({'error': 'secret_key must be an integer'}), 400
+        
+        # Import PDF processing function
+        try:
+            import fitz  # PyMuPDF
+            from EncTestNewTestF import redact_and_overwrite
+        except ImportError as e:
+            return jsonify({'error': f'PDF processing library not available: {str(e)}'}), 500
+        
+        # Save uploaded file temporarily
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as input_file:
+            file.save(input_file.name)
+            input_pdf_path = input_file.name
+        
+        # Create output file path
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as output_file:
+            output_pdf_path = output_file.name
+        
+        try:
+            # Encrypt the PDF
+            redact_and_overwrite(
+                input_pdf_path,
+                font_paths={},  # Empty dict - will extract from PDF or use fallback
+                output_pdf=output_pdf_path,
+                secret_key=secret_key,
+                base_font_path=None  # Will extract from PDF
+            )
+            
+            # Read encrypted PDF
+            with open(output_pdf_path, 'rb') as f:
+                pdf_data = f.read()
+            
+            # Clean up temporary files
+            os.unlink(input_pdf_path)
+            os.unlink(output_pdf_path)
+            
+            # Return PDF as response
+            from flask import Response
+            return Response(
+                pdf_data,
+                mimetype='application/pdf',
+                headers={
+                    'Content-Disposition': f'attachment; filename=encrypted_{file.filename}',
+                    'Access-Control-Allow-Origin': '*',
+                }
+            )
+        
+        except Exception as e:
+            # Clean up temporary files on error
+            if os.path.exists(input_pdf_path):
+                os.unlink(input_pdf_path)
+            if os.path.exists(output_pdf_path):
+                os.unlink(output_pdf_path)
+            raise e
+    
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        traceback.print_exc()
+        return jsonify({'error': error_msg, 'type': type(e).__name__}), 500
 
 if __name__ == '__main__':
     # Configuration

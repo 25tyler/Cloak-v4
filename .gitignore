@@ -51,3 +51,14 @@ Thumbs.db
 fonts/*.woff2
 fonts/*.ttf
 
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Test PDFs
+*.pdf
+!Supertest*.ttf
+
+# Frontend build (will be built on Vercel)
+frontend/dist/
+
